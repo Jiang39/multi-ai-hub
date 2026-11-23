@@ -260,8 +260,15 @@ def signin_gains() -> dict:
             day = stamp.date().isoformat()
             accounts = payload.get("accounts") or []
             if not accounts:
-                # 单账号旧格式：credits_gained 整轮直接计入
-                by_day[day] = by_day.get(day, 0.0) + float(payload.get("credits_gained") or 0)
+                # 单账号格式（silent --account）：按 uid 去重，只取签到分，
+                # 不用 credits_gained（它把未到账的任务奖励也算进去了，会虚高）。
+                name = str(payload.get("uid_hint") or payload.get("account") or "?")
+                report = str(payload.get("report") or "")
+                claimed = re.findall(r"成功领取\s*(\d+)\s*积分", report)
+                today_plus = re.findall(r"今日\s*\+(\d+)", report)
+                checkin = max([int(x) for x in (claimed + today_plus)] or [0])
+                slot = per.setdefault((day, name), {"checkin": 0, "extra": 0})
+                slot["checkin"] = max(slot["checkin"], checkin)
                 continue
             for account in accounts:
                 # 用 uid 做 key：名字可变（备注/重绑），uid 才是账号唯一标识
