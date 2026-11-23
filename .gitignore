@@ -5,6 +5,7 @@ data/
 
 # 签到脚本的本机账号凭据（明文登录态）与注册表
 signin/accounts/
+signin/accounts.bak-*/
 
 # 本机一次性管理脚本（含绝对路径），不进仓库
 signin/update-tasks-admin.ps1
