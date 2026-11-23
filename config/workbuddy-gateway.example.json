@@ -1,0 +1,98 @@
+{
+  "port": 8789,
+  "host": "127.0.0.1",
+  "models": {
+    "default": "deepseek-v4.1-flash",
+    "map": {
+      "claude-sonnet": "deepseek-v4.1-flash",
+      "claude-opus": "deepseek-v4-pro",
+      "claude-haiku": "deepseek-v4-flash",
+      "claude-fable": "glm-5.3-flash",
+      "claude-mythos": "kimi-k3-1",
+      "claude-opus-1": "deepseek-v4-pro",
+      "claude-sonnet-1": "deepseek-v4.1-flash",
+      "claude-haiku-1": "deepseek-v4-flash",
+      "claude-fable-1": "glm-5.3-flash",
+      "claude-mythos-1": "kimi-k3-1",
+      "claude-haiku-2": "hy4flash-free"
+    },
+    "fallbackOrder": [
+      "deepseek-v4.1-flash",
+      "deepseek-v4-pro",
+      "glm-5.3-flash"
+    ],
+    "curated": [
+      {
+        "id": "deepseek-v4.1-flash",
+        "real": "deepseek-v4.1-flash",
+        "label": "DeepSeek V4.1 Flash",
+        "tier": "sonnet",
+        "oneM": true
+      },
+      {
+        "id": "hy4flash",
+        "real": "hy4flash",
+        "label": "混元 4 Flash (x0.03)",
+        "tier": "sonnet",
+        "oneM": true
+      },
+      {
+        "id": "deepseek-v4-pro",
+        "real": "deepseek-v4-pro",
+        "label": "DeepSeek V4 Pro",
+        "tier": "opus",
+        "oneM": true
+      },
+      {
+        "id": "deepseek-v4-flash",
+        "real": "deepseek-v4-flash",
+        "label": "DeepSeek V4 Flash",
+        "tier": "haiku",
+        "oneM": true
+      },
+      {
+        "id": "glm-5.3-flash",
+        "real": "glm-5.3-flash",
+        "label": "GLM 5.3 Flash",
+        "tier": "fable",
+        "oneM": true
+      },
+      {
+        "id": "kimi-k3-1",
+        "real": "kimi-k3-1",
+        "label": "Kimi K3",
+        "tier": "mythos",
+        "oneM": true
+      },
+      {
+        "id": "hy4flash-free",
+        "real": "hy4flash-free",
+        "label": "混元 4 Flash 免费版",
+        "tier": "fable",
+        "oneM": true
+      }
+    ]
+  },
+  "upstream": {
+    "baseUrl": "https://copilot.tencent.com",
+    "chatPath": "/v2/chat/completions",
+    "refreshPath": "/v2/plugin/auth/token/refresh",
+    "timeoutMs": 300000
+  },
+  "accounts": {
+    "dirs": [
+      "%APPDATA%/CodeBuddyExtension/Data/Public/auth",
+      "%LOCALAPPDATA%/CodeBuddyExtension/Data/Public/auth"
+    ],
+    "extraFiles": []
+  },
+  "modelFallback": false,
+  "keepAliveMs": 15000,
+  "minMaxTokens": 8192,
+  "reasoningEffort": "high",
+  "forceReasoningEffort": false,
+  "stripSystemOnReject": true,
+  "stickyRouting": true,
+  "retryOnRateLimit": true,
+  "rateLimitCooldownMs": 60000
+}
