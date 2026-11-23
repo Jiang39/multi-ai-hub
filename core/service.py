@@ -91,16 +91,22 @@ class HubService:
         }
 
     def today_gains(self) -> dict[str, Any]:
-        day = datetime.now(TZ_CN).strftime("%Y-%m-%d")
-        total = 0.0
-        by_day: dict[str, float] = {}
-        for line in self._read_signin_log():
-            if line.get("at", "").startswith(day) and line.get("status") == "CLAIMED":
-                total += float(line.get("gained") or 0)
-            d = str(line.get("at", ""))[:10]
-            if d:
-                by_day[d] = by_day.get(d, 0.0) + float(line.get("gained") or 0)
-        return {"today": total, "byDay": by_day}
+        """今日签到收益：统一读自包含的签到日志（与 usage().gains_today 同源）。"""
+        try:
+            g = wb_module().signin_gains()
+            return {"today": g.get("today", 0.0), "byDay": g.get("by_day", {})}
+        except Exception:
+            # 签到日志不可读时退回新框架自身的签到记录
+            day = datetime.now(TZ_CN).strftime("%Y-%m-%d")
+            total = 0.0
+            by_day: dict[str, float] = {}
+            for line in self._read_signin_log():
+                if line.get("at", "").startswith(day) and line.get("status") == "CLAIMED":
+                    total += float(line.get("gained") or 0)
+                d = str(line.get("at", ""))[:10]
+                if d:
+                    by_day[d] = by_day.get(d, 0.0) + float(line.get("gained") or 0)
+            return {"today": total, "byDay": by_day}
 
     def today_usage(self) -> dict[str, Any]:
         # 协议待补阶段没有网关日志，返回 0 而不是编造

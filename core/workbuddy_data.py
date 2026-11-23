@@ -20,8 +20,8 @@ POOL_DIR = ROOT / "runtime"
 POOL_FILES_DIR = POOL_DIR / "pool"
 LOG_FILE = POOL_DIR / "gateway.log"
 RL_FILE = POOL_DIR / "ratelimit.json"
-ACCOUNTS_FILE = POOL_DIR / "signin" / "accounts.json"
-SIGNIN_LOG = POOL_DIR / "signin" / "signin.log"
+ACCOUNTS_FILE = ROOT / "signin" / "accounts" / "accounts.json"
+SIGNIN_LOG = ROOT / "signin" / "signin.log"
 ENDPOINT = "https://copilot.tencent.com/billing/meter/get-user-resource-summary"
 TIMEOUT = 15
 TZ_CN = timezone(timedelta(hours=8))

@@ -47,7 +47,7 @@ def now_ms() -> int:
 
 def _signin_name(uid: str) -> str:
     """从签到快照读 uid→中文名（主号/新号/三号/四号），读不到返回空。"""
-    snap = ROOT / "runtime" / "signin" / "accounts.json"
+    snap = ROOT / "signin" / "accounts" / "accounts.json"
     try:
         d = json.loads(snap.read_text(encoding="utf-8-sig"))
         for a in d.get("accounts") or []:
