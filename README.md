@@ -29,6 +29,13 @@ python hub.py gateway --port 8899
 查看接入状态：`python hub.py status`
 手动跑签到：`python hub.py checkin`（或 `--platform qwenwork`）
 
+### 账号自动纳管
+
+`python hub.py sync` 会扫描所有平台的当前登录态与历史凭据，把新登录的账号自动加入
+WorkBuddy 网关池与签到快照，并在面板中显示。它按 uid 去重、幂等，重复运行不会重复纳管。
+建议配合 Windows 计划任务定时运行：签到 `python hub.py checkin` 每日一次、
+纳管 `python hub.py sync` 每 4 小时一次。
+
 > 首次运行前，请把示例配置复制为真实配置并按你的环境填写：
 > `config/workbuddy-gateway.example.json` → `config/workbuddy-gateway.json`
 > 账号池文件（含令牌）放在 `runtime/pool/`，不会也不应提交到仓库。

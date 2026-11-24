@@ -183,6 +183,25 @@ def cmd_status(svc: HubService) -> None:
               (" ..." if len(p["declaredModels"]) > 6 else ""))
 
 
+def cmd_sync(svc: HubService) -> None:
+    """扫描并纳管所有平台账号：WorkBuddy 写网关池+bind 签到，其余平台报告当前账号。"""
+    from core.sync import sync_all
+    report = sync_all(svc)
+    wb = report.get("workbuddy", {})
+    print(f"WorkBuddy：发现 {wb.get('found', 0)} 个账号，网关池写入 {len(wb.get('pool_written', []))} 个")
+    for item in wb.get("bind_added", []):
+        if item.get("error"):
+            print(f"  [跳过] {item['name']} ({item['uid']})：{item['error']}")
+        else:
+            print(f"  [新增签到] {item['name']} ({item['uid']})")
+    skipped = wb.get("bind_skipped", [])
+    if skipped:
+        print(f"  已纳管 {len(skipped)} 个：{', '.join(skipped)}")
+    print("其它平台当前账号：")
+    for platform, accts in (report.get("platforms") or {}).items():
+        print(f"  {platform:14s}: {', '.join(accts) if accts else '未登录'}")
+
+
 def cmd_checkin(svc: HubService, platform: str | None) -> None:
     results = svc.run_checkin(platform)
     if not results:
@@ -236,7 +255,16 @@ def cmd_selftest(svc: HubService) -> int:
     import core.workbuddy_native as wn
     wn.POOL._scan(force=True)
     check("8899 Anthropic 原生网关可用", len(wn.POOL.credentials) >= 1 and WB_GATEWAY_CONFIG.exists(),
-          f"原生协议层加载 {len(wn.POOL.credentials)} 个 WorkBuddy 账号（不依赖 8789）")
+          f"原生协议层加载 {len(wn.POOL.credentials)} 个 WorkBuddy 账号")
+    # sync 纳管：只验证扫描能发现全部 WorkBuddy 账号（不写盘）
+    from core.sync import _load_sessions, _signin_module, _pool_payload
+    sg = _signin_module()
+    uids = set()
+    for _label, sess in _load_sessions():
+        got = _pool_payload(sg, sess)
+        if got:
+            uids.add(got[0])
+    check("账号纳管扫描覆盖全部 WorkBuddy 号", len(uids) == 6, f"发现 {len(uids)} 个唯一 uid")
     print(f"\n自检结果：{'全部通过' if not failures else '失败 ' + ', '.join(failures)}")
     return 0 if not failures else 1
 
@@ -646,6 +674,7 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="cmd", required=True)
     sub.add_parser("status")
     sub.add_parser("selftest")
+    sub.add_parser("sync")  # 自动识别并纳管所有平台账号到签到/网关/面板
     p = sub.add_parser("checkin")
     p.add_argument("--platform")
     p = sub.add_parser("serve")
@@ -659,6 +688,8 @@ def main(argv: list[str] | None = None) -> int:
         cmd_status(svc)
     elif args.cmd == "selftest":
         return cmd_selftest(svc)
+    elif args.cmd == "sync":
+        cmd_sync(svc)
     elif args.cmd == "checkin":
         cmd_checkin(svc, args.platform)
     elif args.cmd == "serve":
