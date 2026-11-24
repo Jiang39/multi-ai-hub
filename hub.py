@@ -7,7 +7,7 @@
     python hub.py checkin --platform qwenwork
     python hub.py serve --port 8798   # 本地面板（与 WorkBuddy 8799 区分）
     python hub.py gateway --port 8899 # OpenAI 兼容反代网关 /v1/chat/completions
-    python hub.py selftest            # 框架自检，不联网
+    python hub.py selftest            # 框架自检（联网冒烟，确认登录态与协议就绪）
 
 设计：只依赖标准库；平台协议在 adapters/ 下逐个补；未实现的平台返回
 UNSUPPORTED / 协议待补，不伪造额度或签到成功。
@@ -678,7 +678,7 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("checkin")
     p.add_argument("--platform")
     p = sub.add_parser("serve")
-    p.add_argument("--port", type=int, default=8799)
+    p.add_argument("--port", type=int, default=8798)
     p = sub.add_parser("gateway")
     p.add_argument("--port", type=int, default=8899)
     args = parser.parse_args(argv)
