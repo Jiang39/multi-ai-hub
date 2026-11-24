@@ -45,6 +45,21 @@ def now_ms() -> int:
     return int(time.time() * 1000)
 
 
+def safe_error(text: Any, limit: int = 200) -> str:
+    """错误报文脱敏：截断、去掉本机用户目录、抹掉疑似 token。
+
+    上游原始报文可能含路径/凭据；本地面板结合 DNS rebinding 可被调用方读取，
+    所以回给客户端前统一过一遍，而不是原样透传。
+    """
+    s = str(text or "")
+    # Windows 用户目录（C:\Users\xxx、C:/Users/xxx）
+    s = re.sub(r"[A-Za-z]:[\\/](?:Users|Documents and Settings)[\\/][^\\/\s\"']+", "<USERDIR>", s, flags=re.I)
+    # 疑似 bearer/token 值
+    s = re.sub(r"(?i)(bearer\s+)[A-Za-z0-9._\-]{12,}", r"\1<REDACTED>", s)
+    s = re.sub(r"(?i)(token[\"']?\s*[:=]\s*[\"']?)[A-Za-z0-9._\-]{12,}", r"\1<REDACTED>", s)
+    return s[:limit]
+
+
 # --- $wbEncrypted 解密 -----------------------------------------------------
 # 新版 WorkBuddy 登录态里 accessToken/refreshToken 是 {"$wbEncrypted":1,"envelope":...}
 # 信封，不是明文。解密必须借客户端自带 runtime（node -e helper），复用签到脚本的
@@ -919,7 +934,7 @@ def chat_sync(model: str, payload: dict[str, Any],
                                  reset[0] if reset else now_ms() + int(cfg.get("rateLimitCooldownMs") or 60000))
             POOL.mark_limited(cred.uid, reset[0] if reset else None)
         _log(f"← {real} account={POOL.label(cred)} 失败 HTTP {status}")
-        return {"error": {"message": (res if isinstance(res, str) else str(res))[:300],
+        return {"error": {"message": safe_error(res),
                           "type": "upstream_error", "status": status}}
     try:
         # 上游返回的是 OpenAI SSE chunk（data: {...delta...}），不是 Anthropic 事件。
@@ -1081,11 +1096,11 @@ def handle_messages(req: dict[str, Any], preferred: str | None = None
         if not cfg.get("modelFallback") or status not in FALLBACK_STATUSES:
             _log(f"   {model} 失败 HTTP {status}，放弃")
             return client_status(status), {"type": "error", "error": {"type": "api_error",
-                        "message": (last_message[:500] or f"上游 HTTP {status}")}}, False, meta
+                        "message": safe_error(last_message) or f"上游 HTTP {status}"}}, False, meta
         _log(f"   {model} 不可用（HTTP {status}），尝试下一个模型")
 
     return client_status(last_status), {"type": "error", "error": {"type": "api_error",
-                "message": f"所有候选模型均不可用，最后一个错误：{last_message[:300] or '未知'}"}}, False, meta
+                "message": f"所有候选模型均不可用，最后一个错误：{safe_error(last_message) or '未知'}"}}, False, meta
 
 
 def _serve_success(upstream: Any, model: str, req: dict[str, Any], wants_stream: bool,

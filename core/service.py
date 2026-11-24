@@ -30,6 +30,16 @@ def wb_module() -> Any:
     return wd
 
 
+def safe_error(exc: BaseException, limit: int = 200) -> str:
+    """面板错误字段脱敏：异常文本可能含本机路径，截断并抹掉用户目录。"""
+    import re
+    s = str(exc)
+    s = re.sub(r"[A-Za-z]:[\\/](?:Users|Documents and Settings)[\\/][^\\/\s\"']+",
+               "<USERDIR>", s, flags=re.I)
+    s = re.sub(r"(?i)(bearer\s+)[A-Za-z0-9._\-]{12,}", r"\1<REDACTED>", s)
+    return s[:limit]
+
+
 def now_ms() -> int:
     return int(time.time() * 1000)
 
@@ -54,7 +64,7 @@ class HubService:
                 out.append(Account(
                     platform=adapter.platform, uid="__error__",
                     label=f"{adapter.display_name} 发现账号失败",
-                    raw={"error": str(exc)},
+                    raw={"error": safe_error(exc)},
                 ))
         return out
 
@@ -70,7 +80,7 @@ class HubService:
             try:
                 c: Credits = adapter.fetch_credits(acct) if adapter else Credits(ok=False, error="无适配器")
             except Exception as exc:
-                c = Credits(ok=False, error=str(exc))
+                c = Credits(ok=False, error=safe_error(exc))
             # remain/total 为 None 时如实传 None（面板显示「—」），不填 0 冒充无余额
             rows.append({**account_to_dict(acct), **credits_to_dict(c)})
 
@@ -168,7 +178,7 @@ class HubService:
                 try:
                     r: SigninResult = adapter.checkin(acct)
                 except Exception as exc:
-                    r = SigninResult(ok=False, status="ERROR", message=str(exc))
+                    r = SigninResult(ok=False, status="ERROR", message=safe_error(exc))
                 item = {
                     "at": datetime.now(TZ_CN).isoformat(timespec="seconds"),
                     "platform": p, "uid": acct.uid, "label": acct.label,

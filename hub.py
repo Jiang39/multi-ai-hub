@@ -28,6 +28,22 @@ from urllib.parse import parse_qs, urlparse
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
+
+def netstat_listening_pid(port: int) -> str:
+    """从 netstat 找本机端口的监听 PID。中文 Windows 输出是 GBK，必须显式指定编码。"""
+    import subprocess
+    try:
+        txt = subprocess.run(
+            ["netstat", "-ano", "-p", "TCP"], capture_output=True,
+            text=True, encoding="gbk", errors="replace", timeout=5,
+        ).stdout
+    except Exception:
+        return ""
+    for line in txt.splitlines():
+        if f"127.0.0.1:{port}" in line and "LISTENING" in line.upper():
+            return line.split()[-1]
+    return ""
+
 from core.adapter import load_registry, read_json  # noqa: E402
 from core.service import HubService, LIMITS_FILE, STATUS_FILE  # noqa: E402
 
@@ -265,16 +281,7 @@ def probe_service(port: int, probe_path: str) -> dict[str, Any]:
         out["reason"] = "端口未监听"
         return out
     # 尝试拿 PID（Windows 用 netstat，失败不影响探测）
-    try:
-        import subprocess
-        txt = subprocess.run(["netstat", "-ano", "-p", "TCP"], capture_output=True,
-                             text=True, timeout=5).stdout
-        for line in txt.splitlines():
-            if f"127.0.0.1:{port}" in line and "LISTENING" in line:
-                out["pid"] = line.split()[-1]
-                break
-    except Exception:
-        pass
+    out["pid"] = netstat_listening_pid(port)
     try:
         with urlopen(f"http://127.0.0.1:{port}{probe_path}", timeout=3) as res:
             out["http"] = res.status
@@ -947,17 +954,7 @@ def ensure_port_free(port: int, name: str) -> None:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.bind(("127.0.0.1", port))
     except OSError as e:
-        pid = ""
-        try:
-            import subprocess
-            txt = subprocess.run(["netstat", "-ano", "-p", "TCP"], capture_output=True,
-                                 text=True, timeout=5).stdout
-            for line in txt.splitlines():
-                if f"127.0.0.1:{port}" in line and "LISTENING" in line:
-                    pid = line.split()[-1]
-                    break
-        except Exception:
-            pass
+        pid = netstat_listening_pid(port)
         hint = f" PID {pid}" if pid else ""
         raise SystemExit(
             f"端口 {port} 已被占用{hint}（{name}可能已在运行）。\n"

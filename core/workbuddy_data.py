@@ -157,11 +157,13 @@ def collect() -> list[dict]:
     return rows
 
 
-def usage_stats(official_used: float | None = None) -> dict:
+def usage_stats() -> dict:
     """从网关日志统计每日积分消耗，按本地时区 UTC+8 归日。
 
-    上游积分包只有「当前周期已用」，没有时间序列；网关日志每行请求结束都记了
-    credit=，这是唯一真实按日可分的消耗数据。日志同时读轮转的 .1/.2。
+    上游积分包只有「当前周期已用」，没有周期起点/时间序列，无法按 7/30 天窗口对齐；
+    网关日志每行请求结束都记了 credit=，是唯一真实按日可分的消耗数据（仅反代流量，
+    且只保留 .log/.1/.2 共约 14 天，故 30 天窗口可能偏低）。不再提供 official_used
+    伪对齐参数——接口没给周期起点，任何"官方口径"数字都是编造。
     """
     import re
     from datetime import date, timedelta, timezone
@@ -210,20 +212,12 @@ def usage_stats(official_used: float | None = None) -> dict:
 
     last7 = window(7)
     last30 = window(30)
-    official = round(official_used, 2) if official_used is not None else None
-    # 近 7/30 天窗口用官方「当前周期累计已用」对齐余额；网关日志只覆盖反代
-    # 流量且起始晚，按天累加会系统性偏低。今日仍用日志（粒度更细）。
-    if official is not None and official > last30:
-        last30 = official
-    if official is not None and official > last7:
-        last7 = official
     return {
         "today": round(by_day.get(today.isoformat(), 0.0), 2),
         "last7": last7,
         "last30": last30,
         "by_day": dict(sorted(by_day.items())),
         "since": min(by_day) if by_day else None,
-        "official_used": official,
         "log_total": round(sum(by_day.values()), 2),
     }
 

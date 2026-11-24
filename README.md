@@ -15,18 +15,27 @@
 
 ## 快速开始
 
+全新 clone 后**必须按下面顺序**初始化；直接跑 `selftest` 会因还没有账号池而失败（这是预期行为，不是项目坏了）：
+
 ```bash
-# 1. 自检（联网冒烟，确认登录态与平台协议就绪）
+# 1. 复制配置为真实配置（必需！缺失会导致自动路由选到未登录平台）
+copy config\workbuddy-gateway.example.json config\workbuddy-gateway.json
+
+# 2. 纳管本机已登录账号（自动生成 runtime/pool 与签到快照）
+python hub.py sync
+
+# 3. 自检（联网冒烟，确认登录态与协议就绪；失败返回退出码 1）
 python hub.py selftest
 
-# 2. 启动面板
+# 4. 启动面板与网关
 python hub.py serve --port 8798
-
-# 3. 启动网关
 python hub.py gateway --port 8899
 ```
 
-查看接入状态：`python hub.py status`
+> 只装了 WorkBuddy 时，`status` 里其余 5 家显示"未找到登录目录/待补"是**正常的**——
+> 不需要装齐 6 个客户端，装了哪个 `sync` 就会自动纳管哪个。
+
+查看接入状态：`python hub.py status`（加 `--service` 同时看服务 PID/HTTP 与版本漂移）
 手动跑签到：`python hub.py checkin`（或 `--platform qwenwork`）
 
 ### 账号自动纳管
@@ -37,12 +46,12 @@ WorkBuddy 网关池与签到快照，并在面板中显示。它按 uid 去重�
 （幂等，已签到账号返回 ALREADY，不会重复领取），纳管 `python hub.py sync` 每 10 分钟一次，
 这样新登录的账号最快 10 分钟内自动进入签到、网关与面板。
 
-> 首次运行前，请把示例配置复制为真实配置并按你的环境填写：
-> `config/workbuddy-gateway.example.json` → `config/workbuddy-gateway.json`，然后跑一次
-> `python hub.py sync`：它会从本机客户端登录态（含新版 `$wbEncrypted` 加密凭据，自动
-> 借 WorkBuddy runtime 解密）生成账号池与签到快照。这些运行时数据都在 `runtime/pool/`、
-> `signin/accounts/`，属于隐私数据，不会也不应提交到仓库；缺少 `signin/accounts/` 时
-> 账号昵称退化为 uin 前缀，不影响功能，跑一次 `sync` 即自动生成。
+> 配置 `config/workbuddy-gateway.json` 是**必需项**：它定义模型映射、账号池文件与上游地址。
+> 缺少它时 `sync` 仍可能生成账号池，但网关自动路由会选到未登录平台并报
+> "未找到 XX 登录目录"。`python hub.py sync` 会从本机客户端登录态（含新版 `$wbEncrypted`
+> 加密凭据，自动借 WorkBuddy runtime 解密）生成账号池与签到快照。这些运行时数据都在
+> `runtime/pool/`、`signin/accounts/`，属于隐私数据，不会也不应提交到仓库；缺少
+> `signin/accounts/` 时账号昵称退化为 uin 前缀，跑一次 `sync` 即自动生成。
 
 > 自检说明：`python hub.py selftest` 默认做联网冒烟（含一次极小 chat 请求，消耗可忽略）；
 > 用 `python hub.py selftest --offline` 可跳过联网部分，完全无副作用。各检查项只验证
