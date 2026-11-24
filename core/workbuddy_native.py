@@ -663,6 +663,8 @@ class AnthropicTranslator:
 
     def push(self, chunk: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
         out: list[tuple[str, dict[str, Any]]] = []
+        if not isinstance(chunk, dict):
+            return out
         if isinstance(chunk.get("model"), str) and chunk["model"]:
             self.model = chunk["model"]
         u = chunk.get("usage")
@@ -671,15 +673,21 @@ class AnthropicTranslator:
                 self.reported_input = u["prompt_tokens"]
             if isinstance(u.get("completion_tokens"), int):
                 self.output_tokens = u["completion_tokens"]
-        for ch in chunk.get("choices") or []:
-            delta = ch.get("delta") or {}
+        choices = chunk.get("choices")
+        if not isinstance(choices, list):
+            return out
+        for ch in choices:
+            ch = _as_record(ch)
+            delta = _as_record(ch.get("delta"))
             text = delta.get("content")
             if isinstance(text, str) and text:
                 self._started(out)
                 self._text(out, text)
-            for call in delta.get("tool_calls") or []:
-                self._started(out)
-                self._tool_delta(out, _as_record(call))
+            calls = delta.get("tool_calls")
+            if isinstance(calls, list):
+                for call in calls:
+                    self._started(out)
+                    self._tool_delta(out, _as_record(call))
             if ch.get("finish_reason"):
                 self.stop_reason = ch["finish_reason"]
         return out
@@ -1105,6 +1113,14 @@ def _serve_success(upstream: Any, model: str, req: dict[str, Any], wants_stream:
         """产出 (event, data) 元组，供流式序列化与非流式聚合共用。"""
         logged = False
         try:
+            # 流式时先发 message_start 占位：上游大上下文预填充可能耗时 20s+，
+            # Claude Desktop 若长时间收不到任何字节会读超时并 ECONNRESET。
+            # Anthropic 协议允许 message_start 内容为空，后续 delta 继续填充。
+            if wants_stream and not translator.started:
+                first: list[tuple[str, dict[str, Any]]] = []
+                translator._started(first)
+                for ev, d in first:
+                    yield ev, d
             for data in sse_events(_read_all(upstream)):
                 if isinstance(data.get("usage"), dict):
                     u = data["usage"]

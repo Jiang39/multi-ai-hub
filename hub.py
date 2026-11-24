@@ -836,8 +836,20 @@ class GatewayHandler(LocalOnlyMixin, BaseHTTPRequestHandler):
             try:
                 for chunk in result:
                     self.wfile.write(chunk.encode("utf-8"))
+                    self.wfile.flush()  # 立即送出，避免客户端长时间等不到字节而读超时
             except (BrokenPipeError, ConnectionResetError):
                 pass
+            except Exception as e:
+                # 上游/翻译器异常必须在流内告知客户端，否则半截流会让客户端报 ECONNRESET。
+                from core.workbuddy_native import format_sse, safe_error
+                try:
+                    self.wfile.write(format_sse("error", {
+                        "type": "error",
+                        "error": {"type": "api_error", "message": safe_error(e)},
+                    }).encode("utf-8"))
+                    self.wfile.write(format_sse("message_stop", {"type": "message_stop"}).encode("utf-8"))
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
         else:
             self.send_response(status)
             self.send_header("content-type", "application/json; charset=utf-8")
