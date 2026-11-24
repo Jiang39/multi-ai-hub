@@ -38,8 +38,15 @@ WorkBuddy 网关池与签到快照，并在面板中显示。它按 uid 去重�
 这样新登录的账号最快 10 分钟内自动进入签到、网关与面板。
 
 > 首次运行前，请把示例配置复制为真实配置并按你的环境填写：
-> `config/workbuddy-gateway.example.json` → `config/workbuddy-gateway.json`
-> 账号池文件（含令牌）放在 `runtime/pool/`，不会也不应提交到仓库。
+> `config/workbuddy-gateway.example.json` → `config/workbuddy-gateway.json`，然后跑一次
+> `python hub.py sync`：它会从本机客户端登录态（含新版 `$wbEncrypted` 加密凭据，自动
+> 借 WorkBuddy runtime 解密）生成账号池与签到快照。这些运行时数据都在 `runtime/pool/`、
+> `signin/accounts/`，属于隐私数据，不会也不应提交到仓库；缺少 `signin/accounts/` 时
+> 账号昵称退化为 uin 前缀，不影响功能，跑一次 `sync` 即自动生成。
+
+> 自检说明：`python hub.py selftest` 默认做联网冒烟（含一次极小 chat 请求，消耗可忽略）；
+> 用 `python hub.py selftest --offline` 可跳过联网部分，完全无副作用。各检查项只验证
+> 链路可用性，不校验账号数量（不同用户机器上的账号数本来就不同）。
 
 ## 客户端接入
 

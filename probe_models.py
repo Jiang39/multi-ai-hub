@@ -264,7 +264,10 @@ def qoder_headers(sess: dict[str, Any], url: str) -> dict[str, str]:
 def qwenwork_session() -> dict[str, Any]:
     import glob as _glob
     appdata = Path(os.environ.get("APPDATA", ""))
-    root = Path(sorted(_glob.glob(str(appdata / "QwenWorkCN*")))[0])
+    candidates = sorted(_glob.glob(str(appdata / "QwenWorkCN*")))
+    if not candidates:
+        raise RuntimeError(f"未找到 QwenWork 登录目录：{appdata}\\QwenWorkCN*（请先在 QwenWork 客户端登录）")
+    root = Path(candidates[0])
     key_file = root / "Local State"
     crypt = json.loads(key_file.read_text(encoding="utf-8"))["os_crypt"]
     key = _dpapi_unprotect(base64.b64decode(crypt["encrypted_key"])[5:])

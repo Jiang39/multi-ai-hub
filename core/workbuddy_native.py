@@ -45,6 +45,43 @@ def now_ms() -> int:
     return int(time.time() * 1000)
 
 
+# --- $wbEncrypted 解密 -----------------------------------------------------
+# 新版 WorkBuddy 登录态里 accessToken/refreshToken 是 {"$wbEncrypted":1,"envelope":...}
+# 信封，不是明文。解密必须借客户端自带 runtime（node -e helper），复用签到脚本的
+# _run_auth_helper。按信封内容做进程内缓存，避免每个 token 都起一次 node 子进程。
+_DECRYPT_CACHE: dict[str, str | None] = {}
+_DECRYPT_LOCK = threading.Lock()
+
+
+def _plain_token(value: Any) -> str | None:
+    """明文直接返回；$wbEncrypted 信封借 WorkBuddy runtime 解密。失败返回 None。"""
+    if isinstance(value, str):
+        return value.strip() or None
+    if not isinstance(value, dict) or "$wbEncrypted" not in value:
+        return None
+    cache_key = str(value.get("envelope") or "")[:512]
+    with _DECRYPT_LOCK:
+        if cache_key in _DECRYPT_CACHE:
+            return _DECRYPT_CACHE[cache_key]
+    result: str | None = None
+    try:
+        import importlib.util
+        sg_path = ROOT / "signin" / "signin.py"
+        spec = importlib.util.spec_from_file_location("wb_signin_decrypt", sg_path)
+        sg = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(sg)
+        helper = sg._run_auth_helper(sg.find_workbuddy_runtime(),
+                                     {"operation": "decrypt", "value": value})
+        token = helper.get("accessToken")
+        if isinstance(token, str) and token.strip():
+            result = token.strip()
+    except Exception:
+        result = None
+    with _DECRYPT_LOCK:
+        _DECRYPT_CACHE[cache_key] = result
+    return result
+
+
 def _signin_name(uid: str) -> str:
     """从签到快照读 uid→中文名（主号/新号/三号/四号），读不到返回空。"""
     snap = ROOT / "signin" / "accounts" / "accounts.json"
@@ -102,22 +139,23 @@ class AccountPool:
                 continue
             auth = data.get("auth") or {}
             acct = data.get("account") or {}
-            token = auth.get("accessToken")
-            if isinstance(token, dict) or not isinstance(token, str) or not token.strip():
-                continue  # $wbEncrypted 加密包装不可用
+            # 新版登录态是 $wbEncrypted 信封，旧版是明文；_plain_token 两种都处理
+            token = _plain_token(auth.get("accessToken"))
+            if not token:
+                continue
             uid = str(acct.get("uid") or auth.get("uid") or "")
             if not uid:
                 continue
             exp = auth.get("expiresAt")
             nickname = acct.get("nickname")
-            # pool 里 nickname 常是 $wbEncrypted 信封，不可读；用签到快照的 uid→中文名
+            # nickname 也可能是 $wbEncrypted 信封，读不到时用签到快照的中文名
             if isinstance(nickname, dict) or (isinstance(nickname, str) and "wbEncrypted" in nickname):
                 nickname = _signin_name(uid)
             cred = Credential(
                 uid=uid, uin=str(acct.get("uin") or ""),
                 nickname=str(nickname or ""),
-                access_token=token.strip(),
-                refresh_token=auth.get("refreshToken") if isinstance(auth.get("refreshToken"), str) else None,
+                access_token=token,
+                refresh_token=_plain_token(auth.get("refreshToken")),
                 expires_at=int(exp) if isinstance(exp, (int, float)) else None,
                 refresh_expires_at=int(auth["refreshExpiresAt"]) if isinstance(auth.get("refreshExpiresAt"), (int, float)) else None,
                 domain=auth.get("domain"), enterprise_id=acct.get("enterpriseId"),

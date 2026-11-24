@@ -211,7 +211,7 @@ def cmd_checkin(svc: HubService, platform: str | None) -> None:
         print(f"[{r['status']:12s}] {r['platform']}/{r['label']} +{r['gained']:.2f} {r['message']}")
 
 
-def cmd_selftest(svc: HubService) -> int:
+def cmd_selftest(svc: HubService, offline: bool = False) -> int:
     failures: list[str] = []
 
     def check(name: str, cond: bool, detail: str = "") -> None:
@@ -238,12 +238,16 @@ def cmd_selftest(svc: HubService) -> int:
     check("limits.json 可写入", LIMITS_FILE.exists() and isinstance(limits["limits"], list),
           f"共 {len(limits['limits'])} 条（含 WorkBuddy 网关限流）")
     accts = svc.accounts()
-    check("发现 11 个平台账号（WB 6 + 新 5）", len(accts) == 11, ", ".join(a.key for a in accts))
-    # chat 冒烟：用最小请求验证网关链路（真消费在 probe_chat 已做，这里只查链路通）
-    chat = svc.chat("xiaohuanxiong", "sn-glm-5-3",
-                    {"messages": [{"role": "user", "content": "hi"}], "max_tokens": 1})
-    check("网关 chat 返回 OpenAI 结构", "choices" in chat or "error" in chat,
-          "OK" if "choices" in chat else str(chat.get("error", {}).get("message", ""))[:60])
+    check("发现平台账号（数量因本机登录情况而异）", len(accts) >= 1,
+          f"共 {len(accts)} 个：" + ", ".join(a.key for a in accts[:12]))
+    # chat 冒烟：联网验证网关链路（会消耗极少额度）；--offline 可跳过
+    if offline:
+        print("  [SKIP] 网关 chat 冒烟（--offline，不联网、不消耗额度）")
+    else:
+        chat = svc.chat("xiaohuanxiong", "sn-glm-5-3",
+                        {"messages": [{"role": "user", "content": "hi"}], "max_tokens": 1})
+        check("网关 chat 返回 OpenAI 结构", "choices" in chat or "error" in chat,
+              "OK" if "choices" in chat else str(chat.get("error", {}).get("message", ""))[:60])
     # 治理层：冷却标记能落盘且 preflight 能识别（不实际发请求）
     from core.governance import Governance
     g = Governance()
@@ -264,7 +268,7 @@ def cmd_selftest(svc: HubService) -> int:
         got = _pool_payload(sg, sess)
         if got:
             uids.add(got[0])
-    check("账号纳管扫描覆盖全部 WorkBuddy 号", len(uids) == 6, f"发现 {len(uids)} 个唯一 uid")
+    check("账号纳管扫描可发现 WorkBuddy 号", len(uids) >= 1, f"发现 {len(uids)} 个唯一 uid")
     print(f"\n自检结果：{'全部通过' if not failures else '失败 ' + ', '.join(failures)}")
     return 0 if not failures else 1
 
@@ -673,7 +677,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="多平台签到/反代/面板统一框架")
     sub = parser.add_subparsers(dest="cmd", required=True)
     sub.add_parser("status")
-    sub.add_parser("selftest")
+    p = sub.add_parser("selftest")
+    p.add_argument("--offline", action="store_true", help="跳过联网 chat 冒烟（不消耗额度）")
     sub.add_parser("sync")  # 自动识别并纳管所有平台账号到签到/网关/面板
     p = sub.add_parser("checkin")
     p.add_argument("--platform")
@@ -687,7 +692,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "status":
         cmd_status(svc)
     elif args.cmd == "selftest":
-        return cmd_selftest(svc)
+        return cmd_selftest(svc, offline=args.offline)
     elif args.cmd == "sync":
         cmd_sync(svc)
     elif args.cmd == "checkin":
