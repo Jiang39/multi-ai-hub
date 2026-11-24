@@ -46,18 +46,9 @@ def now_ms() -> int:
 
 
 def safe_error(text: Any, limit: int = 200) -> str:
-    """错误报文脱敏：截断、去掉本机用户目录、抹掉疑似 token。
-
-    上游原始报文可能含路径/凭据；本地面板结合 DNS rebinding 可被调用方读取，
-    所以回给客户端前统一过一遍，而不是原样透传。
-    """
-    s = str(text or "")
-    # Windows 用户目录（C:\Users\xxx、C:/Users/xxx）
-    s = re.sub(r"[A-Za-z]:[\\/](?:Users|Documents and Settings)[\\/][^\\/\s\"']+", "<USERDIR>", s, flags=re.I)
-    # 疑似 bearer/token 值
-    s = re.sub(r"(?i)(bearer\s+)[A-Za-z0-9._\-]{12,}", r"\1<REDACTED>", s)
-    s = re.sub(r"(?i)(token[\"']?\s*[:=]\s*[\"']?)[A-Za-z0-9._\-]{12,}", r"\1<REDACTED>", s)
-    return s[:limit]
+    """错误报文脱敏（统一实现见 core.redact）。"""
+    from .redact import safe_error as _safe
+    return _safe(text, limit)
 
 
 # --- $wbEncrypted 解密 -----------------------------------------------------

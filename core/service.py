@@ -31,13 +31,9 @@ def wb_module() -> Any:
 
 
 def safe_error(exc: BaseException, limit: int = 200) -> str:
-    """面板错误字段脱敏：异常文本可能含本机路径，截断并抹掉用户目录。"""
-    import re
-    s = str(exc)
-    s = re.sub(r"[A-Za-z]:[\\/](?:Users|Documents and Settings)[\\/][^\\/\s\"']+",
-               "<USERDIR>", s, flags=re.I)
-    s = re.sub(r"(?i)(bearer\s+)[A-Za-z0-9._\-]{12,}", r"\1<REDACTED>", s)
-    return s[:limit]
+    """面板错误字段脱敏（统一实现见 core.redact）。"""
+    from .redact import safe_error as _safe
+    return _safe(exc, limit)
 
 
 def now_ms() -> int:

@@ -13,8 +13,16 @@ $pythonCmd = Get-Command python -ErrorAction SilentlyContinue
 if (-not $pythonCmd) { Write-Output "python not found in PATH"; exit 1 }
 $python = $pythonCmd.Source
 if ($python -match 'WindowsApps') {
-  # 商店占位符不可执行，尝试常见真实安装位置
-  $candidates = @(
+  # 商店占位符不可执行，尝试常见真实安装位置 + WorkBuddy 内置 python（按版本倒序取最新）
+  $wbVersions = Join-Path $env:USERPROFILE '.workbuddy\binaries\python\versions'
+  $wbCandidates = @()
+  if (Test-Path $wbVersions) {
+    $wbCandidates = Get-ChildItem -Path $wbVersions -Directory -ErrorAction SilentlyContinue |
+      Sort-Object Name -Descending |
+      ForEach-Object { Join-Path $_.FullName 'pythonw.exe' } |
+      Where-Object { Test-Path $_ }
+  }
+  $candidates = @($wbCandidates) + @(
     "$env:LOCALAPPDATA\Programs\Python\pythonw.exe",
     "C:\Python313\pythonw.exe", "C:\Python312\pythonw.exe", "C:\Python311\pythonw.exe"
   )
