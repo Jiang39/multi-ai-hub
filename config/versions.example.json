@@ -1,0 +1,9 @@
+{
+  "_说明": "可选。留空则使用 core/versions.py 的 ADAPTED 默认值与内置安装路径探测。",
+  "_用法": "客户端升级导致请求头必须改时，在此覆盖对应值；_install_dirs 可指定非标准安装目录（版本文件相对该目录）。",
+  "qoder-intl": {},
+  "qwenwork": {},
+  "loomy": {},
+  "xiaohuanxiong": {},
+  "traework": {}
+}

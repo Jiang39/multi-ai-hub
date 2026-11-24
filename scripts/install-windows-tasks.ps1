@@ -31,4 +31,8 @@ New-Task 'MultiHubCheckin' 'checkin' $every4h 'Multi-AI Hub all-platform checkin
 $every10m = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 10)
 New-Task 'MultiHubSync' 'sync' $every10m 'Multi-AI Hub account onboarding (every 10m)'
 
+# Weekly protocol probe (detects version/key drift early)
+$weekly = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Sunday -At '09:00'
+New-Task 'MultiHubProbe' 'probe' $weekly 'Multi-AI Hub protocol model-key probe (weekly)'
+
 Write-Output "Done. Verify: python hub.py status --service"

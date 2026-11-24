@@ -14,6 +14,8 @@ setup-tasks-admin.ps1
 # 真实配置（含账号池文件路径/uid），只提交 *.example.json
 config/workbuddy-gateway.json
 !config/workbuddy-gateway.example.json
+config/versions.json
+!config/versions.example.json
 
 # ===== 运行时产物 =====
 __pycache__/

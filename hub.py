@@ -190,6 +190,13 @@ def cmd_status(svc: HubService, service: bool = False) -> None:
                 print(f"  [RUN ] {name}  127.0.0.1:{port}  PID {info['pid']}  HTTP {info['http']}")
             else:
                 print(f"  [STOP] {name}  127.0.0.1:{port}  {info['reason']}")
+        print("\n客户端版本（适配值 vs 本机实测；漂移建议跑 probe）")
+        from core.versions import drift_report
+        for r in drift_report(list(svc.adapters)):
+            flag = "DRIFT" if r["drifted"] else "~" if r["note"] else "OK"
+            cosy = f" cosy={r['cosy']}" if r["cosy"] else ""
+            print(f"  [{flag:5s}] {r['platform']:14s} 适配 {r['expected']:8s} / 本机 {r['actual']:10s}{cosy}"
+                  + (f"  ({r['note']})" if r["note"] else ""))
 
 
 def probe_service(port: int, probe_path: str) -> dict[str, Any]:
@@ -226,6 +233,48 @@ def probe_service(port: int, probe_path: str) -> dict[str, Any]:
     except Exception as e:
         out["reason"] = f"端口通但探测失败：{str(e)[:60]}"
     return out
+
+
+def cmd_probe(svc: HubService, platform: str | None = None) -> int:
+    """主动探测各平台协议是否仍可用（max_tokens=1，消耗极小）。
+
+    验证三件事：登录态可读、签名/请求头仍被接受、模型 key 仍有效。
+    返回 0=全部通过，1=有平台失败（可用于计划任务告警）。
+    """
+    status = svc.status()
+    logged = {p["platform"] for p in status["platforms"] if p["ok"]}
+    targets = [platform] if platform else sorted(logged)
+    if not targets:
+        print("没有已登录的平台可探测")
+        return 0
+    failures: list[str] = []
+    for pid in targets:
+        adapter = svc.adapters.get(pid)
+        if not adapter:
+            print(f"  [FAIL] {pid}: 未知平台")
+            failures.append(pid)
+            continue
+        if pid not in logged and platform is None:
+            print(f"  [SKIP] {pid}: 未登录")
+            continue
+        # 选最便宜且最常用的 DS 模型
+        from core.protocols import VERIFIED_MODELS
+        models = VERIFIED_MODELS.get(pid, {})
+        model = next((m for m in models if "deepseek" in m.lower()),
+                     next(iter(models), adapter.declared_models[0] if adapter.declared_models else ""))
+        try:
+            r = svc.chat(pid, model, {"messages": [{"role": "user", "content": "hi"}], "max_tokens": 1})
+            choices = r.get("choices") or []
+            msg = (choices[0].get("message") or {}) if choices and isinstance(choices[0], dict) else {}
+            ok = "error" not in r and bool(msg.get("content") or msg.get("tool_calls"))
+            detail = "OK" if ok else str(r.get("error", {}).get("message", "内容为空"))[:80]
+        except Exception as e:
+            ok, detail = False, str(e)[:80]
+        print(f"  [{'PASS' if ok else 'FAIL'}] {pid:14s} model={model:28s} {detail}")
+        if not ok:
+            failures.append(pid)
+    print(f"\n探测结果：{'全部通过' if not failures else '失败 ' + ', '.join(failures)}")
+    return 0 if not failures else 1
 
 
 def cmd_sync(svc: HubService) -> None:
@@ -740,6 +789,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--service", action="store_true", help="同时检查面板/网关服务是否存活")
     p = sub.add_parser("selftest")
     p.add_argument("--offline", action="store_true", help="跳过联网 chat 冒烟（不消耗额度）")
+    p = sub.add_parser("probe")
+    p.add_argument("--platform", help="只探测指定平台（默认探测所有已登录平台）")
     sub.add_parser("sync")  # 自动识别并纳管所有平台账号到签到/网关/面板
     p = sub.add_parser("checkin")
     p.add_argument("--platform")
@@ -754,6 +805,8 @@ def main(argv: list[str] | None = None) -> int:
         cmd_status(svc, service=args.service)
     elif args.cmd == "selftest":
         return cmd_selftest(svc, offline=args.offline)
+    elif args.cmd == "probe":
+        return cmd_probe(svc, platform=args.platform)
     elif args.cmd == "sync":
         cmd_sync(svc)
     elif args.cmd == "checkin":

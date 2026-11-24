@@ -113,8 +113,23 @@ powershell -ExecutionPolicy Bypass -File scripts\install-windows-tasks.ps1
 随时确认服务状态：
 
 ```bash
-python hub.py status --service   # 显示面板/网关是否存活、PID 与 HTTP 状态
+python hub.py status --service   # 显示面板/网关是否存活、PID、HTTP 状态，以及客户端版本漂移
 ```
+
+`status --service` 末尾会并列显示各平台【协议适配版本 vs 本机实测版本】。版本从本机客户端
+安装目录只读探测（Qoder/Trae/Loomy 可识别，其余显示"未知"）；如需覆盖可在
+`config/versions.json`（从 `config/versions.example.json` 复制）里配置 `_install_dirs`。
+注意：**版本漂移不等于协议失效**——声明性版本头服务端通常宽容，真正判据是 probe。
+
+主动探测协议是否仍可用（登录态、签名、模型 key，消耗极小）：
+
+```bash
+python hub.py probe           # 探测所有已登录平台
+python hub.py probe --platform loomy
+```
+
+失败时退出码为 1，可用于计划任务告警（安装脚本已含每周一次的 `MultiHubProbe` 任务模板）。
+客户端升级后若 probe 失败，再按 `config/versions.json` 调整适配值或更新 `protocols.py` 签名参数。
 
 直接执行 `serve`/`gateway` 时若端口已被占用，会给出占用 PID 与换端口提示，而不是抛底层异常。
 
