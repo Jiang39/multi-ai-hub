@@ -26,6 +26,10 @@ ENDPOINT = "https://copilot.tencent.com/billing/meter/get-user-resource-summary"
 TIMEOUT = 15
 TZ_CN = timezone(timedelta(hours=8))
 
+# 网关 429 日志格式：历史行无箭头 `[ts]    model 失败 HTTP 429`，
+# 当前 chat_sync 行带箭头 `[ts] ← model 失败 HTTP 429`。两种都要认。
+FAIL_429_RE = re.compile(r"^\[(.*?)\]\s+(?:[←←]\s+)?(\S+)\s+失败 HTTP 429")
+
 # 迁移后的路径变量（函数体里引用旧常量名的地方统一在这里兜底）
 BASE_DIR = ROOT
 
@@ -243,6 +247,18 @@ def signin_gains() -> dict:
     per: dict[tuple[str, str], dict[str, int]] = {}
     by_day: dict[str, float] = {}
 
+    def parse_report(report: str, slot: dict[str, int]) -> None:
+        """解析一轮汇报：签到分当天取 max，礼物/任务/连登兑换按轮累加。"""
+        claimed = re.findall(r"成功领取\s*(\d+)\s*积分", report)
+        today = re.findall(r"今日\s*\+(\d+)", report)
+        checkin = max([int(x) for x in (claimed + today)] or [0])
+        slot["checkin"] = max(slot["checkin"], checkin)
+        gifts = sum(int(x) for x in re.findall(r"领旅行礼物\s*\+(\d+)", report))
+        tasks = sum(int(x) for x in re.findall(r"\+credit(\d+)", report))
+        # 连登兑换：文案来自服务端 credit_granted，形如「连登兑换「进阶」（+50 积分）」
+        redeem = sum(int(x) for x in re.findall(r"连登兑换.*?\+(\d+)\s*积分", report))
+        slot["extra"] += gifts + tasks + redeem
+
     if path.exists():
         try:
             lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
@@ -260,30 +276,20 @@ def signin_gains() -> dict:
             day = stamp.date().isoformat()
             accounts = payload.get("accounts") or []
             if not accounts:
-                # 单账号格式（silent --account）：按 uid 去重，只取签到分，
-                # 不用 credits_gained（它把未到账的任务奖励也算进去了，会虚高）。
-                name = str(payload.get("uid_hint") or payload.get("account") or "?")
-                report = str(payload.get("report") or "")
-                claimed = re.findall(r"成功领取\s*(\d+)\s*积分", report)
-                today_plus = re.findall(r"今日\s*\+(\d+)", report)
-                checkin = max([int(x) for x in (claimed + today_plus)] or [0])
+                # 单账号格式（silent --account）：用账号名/uid 做 key，按 uid 去重。
+                # 不用 credits_gained（会把未到账任务奖励算进去，虚高）。
+                name = str(payload.get("uid") or payload.get("uid_hint") or
+                           payload.get("account") or "?")
                 slot = per.setdefault((day, name), {"checkin": 0, "extra": 0})
-                slot["checkin"] = max(slot["checkin"], checkin)
+                parse_report(str(payload.get("report") or ""), slot)
                 continue
             for account in accounts:
+                if not isinstance(account, dict):
+                    continue
                 # 用 uid 做 key：名字可变（备注/重绑），uid 才是账号唯一标识
                 name = str(account.get("uid") or account.get("account") or "?")
-                report = account.get("report") or ""
                 slot = per.setdefault((day, name), {"checkin": 0, "extra": 0})
-                # 本轮签到分：CLAIMED 用「成功领取 N」，ALREADY 用「今日 +N」；当天只取一次
-                claimed = re.findall(r"成功领取\s*(\d+)\s*积分", report)
-                today = re.findall(r"今日\s*\+(\d+)", report)
-                checkin = max([int(x) for x in (claimed + today)] or [0])
-                slot["checkin"] = max(slot["checkin"], checkin)
-                # 礼物 + 任务奖：按轮累加
-                gifts = sum(int(x) for x in re.findall(r"领旅行礼物\s*\+(\d+)", report))
-                tasks = sum(int(x) for x in re.findall(r"\+credit(\d+)", report))
-                slot["extra"] += gifts + tasks
+                parse_report(str(account.get("report") or ""), slot)
 
     for (day, _), vals in per.items():
         by_day[day] = by_day.get(day, 0.0) + vals["checkin"] + vals["extra"]
@@ -338,7 +344,8 @@ def model_usage() -> dict:
         return model_totals[name]
 
     req_re = re.compile(r"^\[(.*?)\] → (?:流式|非流式) model=(\S+) account=(\S+)")
-    ok_re = re.compile(r"^\[(.*?)\] ← (\S+).*?credit=([0-9.]+)")
+    # ← 行现带 account=...（并发下不再靠「最近的 →」猜账号）；旧日志无此字段，回退 cur_acct
+    ok_re = re.compile(r"^\[(.*?)\] ← (\S+?)(?:\s+account=(\S+?))?\s+in=.*?credit=([0-9.]+)")
     for name in ("gateway.log", "gateway.log.1", "gateway.log.2"):
         path = POOL_DIR / name
         if not path.exists():
@@ -369,13 +376,14 @@ def model_usage() -> dict:
                 mslot(cur_model)["rate429"] += 1
                 continue
             m = ok_re.match(line)
-            if m and cur_model and cur_acct:
-                credit = float(m.group(3))
+            if m and cur_model:
+                credit = float(m.group(4))
+                row_acct = m.group(3) or cur_acct
                 mm = mslot(m.group(2))
                 mm["ok"] += 1
                 mm["credit"] += credit
-                if "deepseek" in cur_model:
-                    s = slot(cur_acct)
+                if "deepseek" in cur_model and row_acct:
+                    s = slot(row_acct)
                     s["ok"] += 1
                     s["credit"] += credit
 
@@ -497,8 +505,8 @@ def model_usage() -> dict:
         return focus[name]
 
     req2_re = re.compile(r"^\[(.*?)\] → (?:流式|非流式) model=(\S+) account=(\S+)")
-    ok2_re = re.compile(r"^\[(.*?)\] ← (\S+).*?credit=([0-9.]+)")
-    fail429_re = re.compile(r"^\[(.*?)\]\s+(\S+)\s+失败 HTTP 429")
+    ok2_re = re.compile(r"^\[(.*?)\] ← (\S+)")
+    fail429_re = FAIL_429_RE
     for name in ("gateway.log", "gateway.log.1", "gateway.log.2"):
         path = POOL_DIR / name
         if not path.exists():

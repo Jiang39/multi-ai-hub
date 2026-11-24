@@ -165,6 +165,11 @@ class AccountPool:
             old = by_uid.get(uid)
             if not old or self._score(cred) > self._score(old):
                 by_uid[uid] = cred
+        # 客户端重新登录后池文件里的 access_token 变了，旧的刷新缓存必须失效
+        old = {c.uid: c.access_token for c in self.credentials}
+        for uid, cred in by_uid.items():
+            if old.get(uid) and old[uid] != cred.access_token:
+                self.refreshed.pop(uid, None)
         self.credentials = list(by_uid.values())
         self.scanned_at = now_ms()
 
@@ -184,7 +189,8 @@ class AccountPool:
     def mark_limited(self, uid: str, until_ms: int | None = None, ms: int = 60_000) -> None:
         cap = now_ms() + 24 * 3600_000
         until = min(max(until_ms if until_ms is not None else now_ms() + max(1000, ms), now_ms() + 1000), cap)
-        self.cooldowns[uid] = max(until, self.cooldowns.get(uid, 0))
+        with self.lock:
+            self.cooldowns[uid] = max(until, self.cooldowns.get(uid, 0))
 
     def token_for(self, c: Credential) -> str:
         return self.refreshed.get(c.uid, c.access_token)
@@ -242,9 +248,15 @@ class AccountPool:
         token = d.get("accessToken") or d.get("access_token")
         if not token:
             return None
-        self.refreshed[c.uid] = token
-        return Credential(**{**c.__dict__, "access_token": token,
-                             "refresh_token": d.get("refreshToken", c.refresh_token)})
+        new_rt = d.get("refreshToken") or c.refresh_token
+        with self.lock:
+            self.refreshed[c.uid] = token
+            # 新 refresh_token 回写池内凭据，否则下次 401 仍用旧 R1 刷新
+            for item in self.credentials:
+                if item.uid == c.uid:
+                    item.refresh_token = new_rt
+                    item.access_token = token
+        return Credential(**{**c.__dict__, "access_token": token, "refresh_token": new_rt})
 
 
 POOL = AccountPool()
@@ -276,17 +288,30 @@ class ModelCooldowns:
 
     def write(self) -> None:
         try:
-            accounts = {c.uin or c.uid: {"until": u, "local": _local(u)} for uid_c, u in () for c in ()}
-            # 账号级冷却
+            # 快照后再遍历：账号池由 POOL.lock 保护，模型冷却由自身 lock 保护
+            # （mark/clear 在持锁时调用 write，RLock 可重入）。
+            with POOL.lock:
+                cred_by_uid = {c.uid: c for c in POOL.credentials}
+                cooldowns = dict(POOL.cooldowns)
             accounts = {}
-            for uid, until in POOL.cooldowns.items():
-                c = next((x for x in POOL.credentials if x.uid == uid), None)
+            for uid, until in cooldowns.items():
+                c = cred_by_uid.get(uid)
                 key = (c.uin or c.uid) if c else uid
                 accounts[key] = {"until": until, "local": _local(until)}
-            models = {k: {"until": u, "local": _local(u)} for k, u in self.items.items() if u > now_ms()}
+            with self.lock:
+                models = {k: {"until": u, "local": _local(u)}
+                          for k, u in self.items.items() if u > now_ms()}
             RL_FILE.parent.mkdir(parents=True, exist_ok=True)
-            RL_FILE.write_text(json.dumps({"accounts": accounts, "models": models},
+            tmp = RL_FILE.with_name(f"{RL_FILE.name}.{__import__('os').getpid()}.{uuid.uuid4().hex}.tmp")
+            try:
+                tmp.write_text(json.dumps({"accounts": accounts, "models": models},
                                           ensure_ascii=False, indent=2), encoding="utf-8")
+                tmp.replace(RL_FILE)
+            finally:
+                try:
+                    tmp.unlink(missing_ok=True)
+                except OSError:
+                    pass
         except OSError:
             pass
 
@@ -764,16 +789,20 @@ class LogManager:
             pass
 
     def clean_expired(self) -> None:
-        """删除超过 max_age_days 的轮转文件（绝不删主日志）。"""
+        """删除超过 max_age_days 的轮转文件（绝不删主日志）。
+
+        与 rotate_if_needed 共用 self.lock，避免删掉刚轮转出来的 .1。
+        """
         import time as _t
         cutoff = _t.time() - self.max_age_days * 86400
-        for i in range(1, self.keep):
-            p = Path(f"{self.file}.{i}")
-            try:
-                if p.exists() and p.stat().st_mtime < cutoff:
-                    p.unlink()
-            except OSError:
-                pass
+        with self.lock:
+            for i in range(1, self.keep):
+                p = Path(f"{self.file}.{i}")
+                try:
+                    if p.exists() and p.stat().st_mtime < cutoff:
+                        p.unlink()
+                except OSError:
+                    pass
 
     def _loop(self) -> None:
         while True:
@@ -878,16 +907,18 @@ def chat_sync(model: str, payload: dict[str, Any],
             body["tool_choice"] = payload["tool_choice"]
     started = now_ms()
     status, res = forward_chat(cfg, cred, POOL.token_for(cred), body)
-    if status == 401 and POOL.refresh(cred):
-        cred = POOL.refresh(cred)  # type: ignore[assignment]
-        status, res = forward_chat(cfg, cred, POOL.token_for(cred), body)
+    if status == 401:
+        refreshed = POOL.refresh(cred)
+        if refreshed:
+            cred = refreshed
+            status, res = forward_chat(cfg, cred, POOL.token_for(cred), body)
     if status != 200:
         if status == 429:
             reset = parse_rate_limit_reset(res if isinstance(res, str) else "")
             MODEL_COOLDOWNS.mark(cred.uin or cred.uid, real,
                                  reset[0] if reset else now_ms() + int(cfg.get("rateLimitCooldownMs") or 60000))
             POOL.mark_limited(cred.uid, reset[0] if reset else None)
-        _log(f"← {real} 失败 HTTP {status}")
+        _log(f"← {real} account={POOL.label(cred)} 失败 HTTP {status}")
         return {"error": {"message": (res if isinstance(res, str) else str(res))[:300],
                           "type": "upstream_error", "status": status}}
     try:
@@ -926,7 +957,8 @@ def chat_sync(model: str, payload: dict[str, Any],
         message["tool_calls"] = tool_calls
     _log_usage(real, started, {"prompt": inp, "completion": out,
                                "cached": upstream_usage.get("cached", 0),
-                               "credit": upstream_usage.get("credit", 0)})
+                               "credit": upstream_usage.get("credit", 0)},
+               account=POOL.label(cred))
     return {
         "id": str(amsg.get("id") or "chatcmpl-" + uuid.uuid4().hex[:12]),
         "object": "chat.completion", "created": int(time.time()), "model": model,
@@ -1065,18 +1097,25 @@ def _serve_success(upstream: Any, model: str, req: dict[str, Any], wants_stream:
 
     def events() -> Any:
         """产出 (event, data) 元组，供流式序列化与非流式聚合共用。"""
-        for data in sse_events(_read_all(upstream)):
-            if isinstance(data.get("usage"), dict):
-                u = data["usage"]
-                for src, dst in (("prompt_tokens", "prompt"), ("completion_tokens", "completion"),
-                                 ("prompt_cache_hit_tokens", "cached"), ("credit", "credit")):
-                    if isinstance(u.get(src), (int, float)):
-                        usage[dst] = u[src]
-            for ev, d in translator.push(data):
+        logged = False
+        try:
+            for data in sse_events(_read_all(upstream)):
+                if isinstance(data.get("usage"), dict):
+                    u = data["usage"]
+                    for src, dst in (("prompt_tokens", "prompt"), ("completion_tokens", "completion"),
+                                     ("prompt_cache_hit_tokens", "cached"), ("credit", "credit")):
+                        if isinstance(u.get(src), (int, float)):
+                            usage[dst] = u[src]
+                for ev, d in translator.push(data):
+                    yield ev, d
+            for ev, d in translator.finish():
                 yield ev, d
-        for ev, d in translator.finish():
-            yield ev, d
-        _log_usage(model, meta.get("started", now_ms()), usage)
+        finally:
+            # 客户端提前断连/生成器未消费完时也要记账，避免 credit 漏计。
+            if not logged:
+                logged = True
+                _log_usage(model, meta.get("started", now_ms()), usage,
+                           account=str(meta.get("account") or ""))
 
     if wants_stream:
         return 200, (format_sse(ev, d) for ev, d in events()), True, meta
@@ -1092,10 +1131,11 @@ def _read_all(upstream: Any) -> str:
         return ""
 
 
-def _log_usage(model: str, started: int, usage: dict[str, Any]) -> None:
+def _log_usage(model: str, started: int, usage: dict[str, Any], account: str = "") -> None:
     ms = now_ms() - started
     out = usage.get("completion", "?")
     inp = usage.get("prompt", "?")
     cached = usage.get("cached", 0)
     rate = f" {round(out*1000/ms)}tok/s" if isinstance(out, (int, float)) and ms > 0 else ""
-    _log(f"← {model} in={inp} out={out} cache={cached} credit={usage.get('credit', 0)} {ms}ms{rate}")
+    acct = f" account={account}" if account else ""
+    _log(f"← {model}{acct} in={inp} out={out} cache={cached} credit={usage.get('credit', 0)} {ms}ms{rate}")

@@ -41,6 +41,55 @@ def workbuddy_model_map() -> dict[str, str]:
     return {str(k): str(v) for k, v in ((cfg.get("models") or {}).get("map") or {}).items()}
 
 
+# 统一模型别名：cc-switch / Claude Desktop 里只显示这些名字，后台自动代理到
+# 任一已登录平台的对应模型（按 alias_routes 顺序尝试，失败/限流自动换平台）。
+# 若客户端显式写 "平台/模型"，仍可按前缀硬绑到指定平台。
+ALIAS_ROUTES: dict[str, tuple[tuple[str, str], ...]] = {
+    "deepseek-v4.1-flash": (
+        ("workbuddy", "deepseek-v4.1-flash"),
+        ("traework", "deepseek-v4.1-flash"),
+        ("xiaohuanxiong", "sn-deepseek-v4-1-flash-1017"),
+        ("qwenwork", "deepseek-flash"),
+        ("loomy", "DeepSeek-V4.1-Flash"),
+        ("qoder-intl", "DeepSeek-Flash"),
+    ),
+    "glm-5.3": (
+        ("workbuddy", "glm-5.3-flash"),
+        ("traework", "glm-5.3"),
+        ("xiaohuanxiong", "sn-glm-5-3"),
+        ("qwenwork", "glm-5.3"),
+        ("loomy", "GLM-5.3-Flash"),
+        ("qoder-intl", "GLM-5.3"),
+    ),
+    "kimi-k3.1-pro": (
+        ("workbuddy", "kimi-k3-1"),
+        ("xiaohuanxiong", "sn-kimi-k3-1-pro"),
+        ("qwenwork", "kimi-k3.1-pro"),
+        ("qoder-intl", "Kimi-K3.1-Pro"),
+        ("traework", "kimi-k3"),
+    ),
+}
+
+# Claude 系别名 → 统一别名（保留现有客户端配置，不改 base_url 就想切自动路由时）
+CLAUDE_TO_ALIAS = {
+    "claude-sonnet-1": "deepseek-v4.1-flash",
+    "claude-haiku-2": "deepseek-v4.1-flash",
+    "claude-fable-1": "glm-5.3",
+    "claude-mythos-1": "kimi-k3.1-pro",
+}
+
+
+def normalize_alias(model: str) -> str:
+    """Claude 系假名 → 统一别名；已是别名或平台/模型则原样返回。"""
+    return CLAUDE_TO_ALIAS.get(model, model)
+
+
+def alias_routes(model: str) -> list[tuple[str, str]]:
+    """返回该模型可自动代理的 (平台, 上游模型) 列表。"""
+    alias = normalize_alias(model)
+    return list(ALIAS_ROUTES.get(alias, ()))
+
+
 # Anthropic 原生：8899 的 /v1/messages 由 core/workbuddy_native.py 直接调用
 # WorkBuddy 上游（6 号池 / sticky 缓存 / 账号×模型冷却 / token 刷新），不依赖 8789。
 ANTHROPIC_PATHS = ("/v1/messages", "/v1/messages/count_tokens")
@@ -543,8 +592,8 @@ function renderCredits(data) {
   const us = CACHE.usage || u;
   document.getElementById('usage').innerHTML = [
     ['今日', us.today, us.gains_today, '网关日志 · 今日 00:00 起'],
-    ['近 7 天', us.last7, us.gains_last7, '官方余额口径'],
-    ['近 30 天', us.last30, us.gains_last30, '官方余额口径'],
+    ['近 7 天', us.last7, us.gains_last7, '网关日志口径（不含非反代消耗）'],
+    ['近 30 天', us.last30, us.gains_last30, '网关日志口径（不含非反代消耗）'],
   ].map(([label,spent,gain,note]) => `<div class="usage-card"><div class="usage-label">${label}</div><div class="usage-value">-${fmt(spent)} <span style="font-size:13px;color:var(--ok)">+${fmt(gain)}</span></div><div class="usage-note">净 ${fmt((gain||0)-(spent||0))} · ${note}</div></div>`).join('');
 }
 function renderModelStatus(d) {
@@ -593,7 +642,50 @@ setInterval(load, 10000);
 """
 
 
-class PanelHandler(BaseHTTPRequestHandler):
+MAX_BODY_BYTES = 4 * 1024 * 1024  # 请求体上限，防止恶意 Content-Length 打满内存
+
+
+class LocalOnlyMixin:
+    """本地服务的基础防护：Host 白名单 + Origin 校验 + 请求体大小/类型限制。
+
+    阻止任意网页用 no-cors POST 静默烧额度/改备注，以及 DNS rebinding 读取面板。
+    """
+
+    def _reject_foreign_request(self) -> bool:  # type: ignore[no-untyped-def]
+        host = (self.headers.get("host") or "").split(":")[0].lower()  # type: ignore[attr-defined]
+        if host not in ("127.0.0.1", "localhost", "::1"):
+            self._json({"error": "forbidden host"}, 403)  # type: ignore[attr-defined]
+            return True
+        origin = (self.headers.get("origin") or "").strip()
+        if origin:
+            o = urlparse(origin)
+            if o.hostname not in ("127.0.0.1", "localhost", "::1"):
+                self._json({"error": "forbidden origin"}, 403)  # type: ignore[attr-defined]
+                return True
+        return False
+
+    def _read_body(self) -> dict[str, Any] | None:  # type: ignore[no-untyped-def]
+        """读取并校验 JSON body；失败时已写出 400/413，返回 None。"""
+        try:
+            n = int(self.headers.get("content-length") or 0)  # type: ignore[attr-defined]
+        except ValueError:
+            self._json({"error": "invalid content-length"}, 400)  # type: ignore[attr-defined]
+            return None
+        if n < 0 or n > MAX_BODY_BYTES:
+            self._json({"error": "body too large"}, 413)  # type: ignore[attr-defined]
+            return None
+        try:
+            data = json.loads(self.rfile.read(n) or b"{}")  # type: ignore[attr-defined]
+        except (ValueError, json.JSONDecodeError):
+            self._json({"error": "invalid json"}, 400)  # type: ignore[attr-defined]
+            return None
+        if not isinstance(data, dict):
+            self._json({"error": "body must be an object"}, 400)  # type: ignore[attr-defined]
+            return None
+        return data
+
+
+class PanelHandler(LocalOnlyMixin, BaseHTTPRequestHandler):
     svc: HubService
 
     def log_message(self, fmt: str, *args: Any) -> None:
@@ -608,6 +700,8 @@ class PanelHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self) -> None:  # noqa: N802
+        if self._reject_foreign_request():
+            return
         path = urlparse(self.path).path
         if path == "/favicon.ico":
             self.send_response(204)
@@ -640,18 +734,18 @@ class PanelHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         path = urlparse(self.path).path
+        if self._reject_foreign_request():
+            return
         if path == "/api/aliases":
-            try:
-                n = int(self.headers.get("content-length") or 0)
-                data = json.loads(self.rfile.read(n) or b"{}")
-                self._json(self.svc.set_alias(str(data.get("key", "")), str(data.get("value", ""))))
-            except (ValueError, KeyError):
-                self._json({"error": "invalid json"}, 400)
+            data = self._read_body()
+            if data is None:
+                return
+            self._json(self.svc.set_alias(str(data.get("key", "")), str(data.get("value", ""))))
         else:
             self._json({"error": "not found"}, 404)
 
 
-class GatewayHandler(BaseHTTPRequestHandler):
+class GatewayHandler(LocalOnlyMixin, BaseHTTPRequestHandler):
     svc: HubService
 
     def log_message(self, fmt: str, *args: Any) -> None:
@@ -666,17 +760,16 @@ class GatewayHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self) -> None:  # noqa: N802
+        if self._reject_foreign_request():
+            return
         path = urlparse(self.path).path
         if path == "/v1/models":
-            # Anthropic 客户端（cc-switch）用 OpenAI 风格 /v1/models 也可；
-            # 同时提供 Anthropic 格式
-            models: list[dict[str, Any]] = []
-            for adapter in self.svc.adapters.values():
-                for m in adapter.declared_models:
-                    models.append({
-                        "id": f"{adapter.platform}/{m}", "object": "model",
-                        "owned_by": adapter.platform,
-                    })
+            # 默认只列统一别名：客户端不必关心平台，后台自动代理 + 失败换平台。
+            # 需要绑定具体平台时仍可手填 "平台/模型"（见 ALIAS_ROUTES / declared_models）。
+            models: list[dict[str, Any]] = [
+                {"id": a, "object": "model", "owned_by": "multi-ai-hub"}
+                for a in ALIAS_ROUTES
+            ]
             self._json({"object": "list", "data": models})
         elif path in ANTHROPIC_PATHS:
             self._proxy_anthropic(path, b"")
@@ -708,6 +801,12 @@ class GatewayHandler(BaseHTTPRequestHandler):
                 self._json(resp, 200 if resp.get("type") != "error" else 400)
                 return
         preferred = self.headers.get("x-wb-account")
+        # 统一别名 → WorkBuddy 真实模型：让只显示模型的客户端无需关心平台。
+        model_name = payload.get("model") if isinstance(payload.get("model"), str) else ""
+        if model_name in ALIAS_ROUTES:
+            wb_model = next((mid for pid, mid in ALIAS_ROUTES[model_name] if pid == "workbuddy"), None)
+            if wb_model:
+                payload = {**payload, "model": wb_model}
         try:
             status, result, is_stream, meta = wn.handle_messages(payload, preferred)
         except Exception as e:
@@ -737,35 +836,29 @@ class GatewayHandler(BaseHTTPRequestHandler):
             self.wfile.write(data)
 
     def do_POST(self) -> None:  # noqa: N802
+        if self._reject_foreign_request():
+            return
         path = urlparse(self.path).path
         if path in ANTHROPIC_PATHS:
-            n = int(self.headers.get("content-length") or 0)
+            n = 0
+            try:
+                n = int(self.headers.get("content-length") or 0)
+            except ValueError:
+                self._json({"error": {"message": "invalid content-length", "type": "invalid_request"}}, 400)
+                return
+            if n < 0 or n > MAX_BODY_BYTES:
+                self._json({"error": {"message": "body too large", "type": "invalid_request"}}, 413)
+                return
             self._proxy_anthropic(path, self.rfile.read(n))
             return
         if path not in ("/v1/chat/completions", "/chat/completions"):
             self._json({"error": {"message": "not found", "type": "invalid_request"}}, 404)
             return
-        try:
-            n = int(self.headers.get("content-length") or 0)
-            payload = json.loads(self.rfile.read(n) or b"{}")
-        except ValueError:
-            self._json({"error": {"message": "invalid json", "type": "invalid_request"}}, 400)
+        payload = self._read_body()
+        if payload is None:
             return
         model = str(payload.get("model") or "")
-        platform, _, real_model = model.partition("/")
-        if not real_model:
-            # 无平台前缀：先查 WorkBuddy 别名表（claude-sonnet 等），命中即走 workbuddy，
-            # 避免 deepseek-v4.1-flash 这类同名模型被别的平台抢先反查到。
-            alias = workbuddy_model_map()
-            if model in alias:
-                platform, real_model = "workbuddy", alias[model]
-            else:
-                platform = "qwenwork"
-                for pid, adapter in self.svc.adapters.items():
-                    if model in adapter.declared_models:
-                        platform = pid
-                        break
-                real_model = model
+        explicit = "/" in model
         preferred = self.headers.get("x-hub-account")
         # sticky 依据：客户端给的 session id，否则用首个用户消息文本哈希
         session_key = self.headers.get("x-hub-session")
@@ -776,7 +869,28 @@ class GatewayHandler(BaseHTTPRequestHandler):
                     c = m.get("content")
                     session_key = c if isinstance(c, str) else json.dumps(c, ensure_ascii=False)
                     break
-        result = self.svc.chat(platform, real_model, payload, preferred, session_key=session_key)
+
+        if explicit:
+            platform, _, real_model = model.partition("/")
+            result = self.svc.chat(platform, real_model, payload, preferred, session_key=session_key)
+        else:
+            routes = alias_routes(model)
+            if not routes:
+                # 兼容旧 Claude 假名（走 WorkBuddy 原生映射）
+                alias = workbuddy_model_map()
+                routes = [("workbuddy", alias.get(model, model))]
+            # 自动代理：逐个平台尝试；只有限流/ overload 才换平台，参数错误直接返回
+            result: dict[str, Any] = {}
+            for pid, mid in routes:
+                result = self.svc.chat(pid, mid, payload, preferred, session_key=session_key)
+                err = result.get("error") or {}
+                if "error" not in result:
+                    if isinstance(result.get("usage"), dict):
+                        result["usage"]["routed_platform"] = pid
+                    break
+                text = f"{err.get('type', '')} {err.get('message', '')}".lower()
+                if not any(k in text for k in ("rate", "limit", "429", "overload", "unsupported", "unknown")):
+                    break  # 认证/参数错误，换平台也不会好
         status = 400 if "error" in result else 200
         self._json(result, status)
 

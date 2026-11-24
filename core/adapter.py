@@ -11,6 +11,8 @@
 from __future__ import annotations
 
 import json
+import os
+import uuid
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any, Iterator
@@ -121,10 +123,17 @@ def load_registry() -> dict[str, PlatformAdapter]:
 
 
 def write_json(path: Path, data: Any) -> None:
+    """原子写：临时名含 pid+uuid，避免面板/网关/CLI 并发写相互踩踏。"""
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(path)
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+    try:
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(path)
+    finally:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def read_json(path: Path, default: Any) -> Any:

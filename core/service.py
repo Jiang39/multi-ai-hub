@@ -91,22 +91,30 @@ class HubService:
         }
 
     def today_gains(self) -> dict[str, Any]:
-        """今日签到收益：统一读自包含的签到日志（与 usage().gains_today 同源）。"""
+        """今日签到收益 = WorkBuddy 签到日志 + 新框架其它平台签到。
+
+        signin_gains() 日志缺失时正常返回 0（不抛异常），所以不能靠 except 兜底：
+        主动合并 data/signin.jsonl，避免非 WorkBuddy 平台的收益被吞掉。
+        """
         try:
             g = wb_module().signin_gains()
-            return {"today": g.get("today", 0.0), "byDay": g.get("by_day", {})}
+            by_day = dict(g.get("by_day") or {})
         except Exception:
-            # 签到日志不可读时退回新框架自身的签到记录
-            day = datetime.now(TZ_CN).strftime("%Y-%m-%d")
-            total = 0.0
-            by_day: dict[str, float] = {}
-            for line in self._read_signin_log():
-                if line.get("at", "").startswith(day) and line.get("status") == "CLAIMED":
-                    total += float(line.get("gained") or 0)
-                d = str(line.get("at", ""))[:10]
-                if d:
-                    by_day[d] = by_day.get(d, 0.0) + float(line.get("gained") or 0)
-            return {"today": total, "byDay": by_day}
+            by_day = {}
+        # 新框架 hub.py checkin 的收益（Qoder/Trae/小浣熊等）
+        for line in self._read_signin_log():
+            d = str(line.get("at", ""))[:10]
+            if not d or line.get("status") not in ("CLAIMED", "ALREADY", "OK"):
+                continue
+            try:
+                gained = float(line.get("gained") or 0)
+            except (TypeError, ValueError):
+                continue
+            if gained > 0:
+                by_day[d] = by_day.get(d, 0.0) + gained
+        today = datetime.now(TZ_CN).strftime("%Y-%m-%d")
+        return {"today": round(by_day.get(today, 0.0), 2),
+                "byDay": {k: round(v, 2) for k, v in by_day.items()}}
 
     def today_usage(self) -> dict[str, Any]:
         # 协议待补阶段没有网关日志，返回 0 而不是编造
@@ -117,18 +125,30 @@ class HubService:
         try:
             wb = wb_module()
             u = wb.usage_stats()
-            g = wb.signin_gains()
+            g = self.today_gains()  # 与面板今日签到同源（含非 WorkBuddy 平台）
+            by_day = g.get("byDay") or {}
+            g7 = sum(v for d, v in by_day.items() if self._within(d, 7))
+            g30 = sum(v for d, v in by_day.items() if self._within(d, 30))
             return {
                 "today": u.get("today", 0.0), "last7": u.get("last7", 0.0),
                 "last30": u.get("last30", 0.0), "by_day": u.get("by_day", {}),
-                "gains_today": g.get("today", 0.0), "gains_last7": g.get("last7", 0.0),
-                "gains_last30": g.get("last30", 0.0),
-                "note": "消耗来自统一网关日志；签到收益来自签到记录",
+                "gains_today": g.get("today", 0.0), "gains_last7": round(g7, 2),
+                "gains_last30": round(g30, 2),
+                "note": "消耗来自网关日志（仅反代流量，可能低于官方周期已用）；签到收益来自签到记录",
                 "ok": True,
             }
         except Exception as e:
             return {"today": 0.0, "last7": 0.0, "last30": 0.0,
                     "note": f"用量统计读取失败：{str(e)[:100]}", "ok": False}
+
+    @staticmethod
+    def _within(day: str, days: int) -> bool:
+        try:
+            d = datetime.strptime(day, "%Y-%m-%d").date()
+        except ValueError:
+            return False
+        from datetime import date
+        return 0 <= (datetime.now(TZ_CN).date() - d).days < days
 
     def model_status(self) -> dict[str, Any]:
         """账号×模型限流矩阵：WorkBuddy 用原面板口径（含 429 累计/恢复时间）。"""

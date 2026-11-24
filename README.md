@@ -57,8 +57,14 @@ http://127.0.0.1:8899
 ```
 
 模型名两种写法：
-- `claude-sonnet-1` 等别名 —— 走 WorkBuddy 原生协议（别名映射见配置 `models.map`）
-- `xiaohuanxiong/sn-glm-5-3` —— 走指定平台的指定模型
+
+- **统一模型名（推荐）**：`deepseek-v4.1-flash`、`glm-5.3`、`kimi-k3.1-pro`。
+  `/v1/models` 只列这三种，客户端**只显示模型、不显示平台**，后台自动选平台：
+  默认 WorkBuddy 优先，限流/失败时依次切 Trae、小浣熊、QwenWork、Loomy、Qoder。
+  旧 Claude 假名 `claude-sonnet-1`/`claude-haiku-2`（DS）、`claude-fable-1`（GLM）、
+  `claude-mythos-1`（Kimi）也会自动归一到统一模型名，无需改客户端配置。
+- **平台前缀（可选硬绑）**：`xiaohuanxiong/sn-glm-5-3` —— 只走指定平台的指定模型。
+  当你明确想用某家额度、或自动路由选错时才用。
 
 ## 支持的模型（以实测为准）
 
@@ -96,6 +102,8 @@ data/                  【不提交】面板运行期快照与备注
 - 令牌只存在于本机登录态与 `runtime/pool/` 的明文池文件，**不会**经由 API 返回给面板或客户端，也不打印到日志。
 - `.gitignore` 已排除 `runtime/`、`data/`、真实配置与所有日志。提交前请再次确认没有把账号池文件、token 或个人信息带进版本库。
 - 面板备注、积分历史等属于个人数据，同样在 `data/` 下被忽略。
+- 面板与网关只接受本机访问：`Host` 必须是 `127.0.0.1` / `localhost`，带 `Origin` 时也须为本机，
+  阻止恶意网页用 `no-cors` POST 静默调网关/改备注，以及 DNS rebinding 读取面板；请求体上限 4 MB。
 
 ## 后台运行（Windows）
 
