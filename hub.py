@@ -800,9 +800,14 @@ class GatewayHandler(LocalOnlyMixin, BaseHTTPRequestHandler):
         except ValueError:
             self._json({"type": "error", "error": {"type": "invalid_request", "message": "invalid json"}}, 400)
             return
-        # 新平台分发：model 带 平台/ 前缀且非 workbuddy → 走对应适配器
+        # 平台前缀分发：
+        #   workbuddy/模型 → 剥掉前缀，走原生协议（上游不认识带前缀的模型名，直接传会 11102）
+        #   其它平台/模型   → 走对应适配器
         model_name = payload.get("model") if isinstance(payload.get("model"), str) else ""
-        if "/" in model_name and not model_name.startswith("workbuddy/"):
+        if model_name.startswith("workbuddy/"):
+            payload = {**payload, "model": model_name[len("workbuddy/"):]}
+            model_name = payload["model"]
+        elif "/" in model_name:
             handled, resp = _dispatch_platform_model(self.svc, model_name, payload)
             if handled:
                 self._json(resp, 200 if resp.get("type") != "error" else 400)
