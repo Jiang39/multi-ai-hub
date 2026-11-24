@@ -649,7 +649,10 @@ setInterval(load, 10000);
 """
 
 
-MAX_BODY_BYTES = 4 * 1024 * 1024  # 请求体上限，防止恶意 Content-Length 打满内存
+# 请求体上限：Claude Code 的完整对话历史（含图片 base64）可轻松超过 4MB，
+# 过小会让大上下文对话被 413 拒绝、客户端在发送途中看到 ECONNRESET。
+# 64MB 远大于 1M token 上下文的可能体积，同时仍防止恶意超大 body 打满内存。
+MAX_BODY_BYTES = 64 * 1024 * 1024
 
 
 class LocalOnlyMixin:
