@@ -891,7 +891,21 @@ def chat_sync(model: str, payload: dict[str, Any],
         return {"error": {"message": (res if isinstance(res, str) else str(res))[:300],
                           "type": "upstream_error", "status": status}}
     try:
-        events = [(e.get("event", ""), e) for e in sse_events(res if isinstance(res, str) else "")]
+        # 上游返回的是 OpenAI SSE chunk（data: {...delta...}），不是 Anthropic 事件。
+        # 必须与 handle_messages() 一样用 AnthropicTranslator.push() 逐个翻译，
+        # 再 finish() 收尾，最后 events_to_message() 聚合成一条 message。
+        translator = AnthropicTranslator(real, estimate_tokens(payload.get("messages")))
+        events: list[tuple[str, dict[str, Any]]] = []
+        upstream_usage: dict[str, Any] = {}
+        for chunk in sse_events(res if isinstance(res, str) else ""):
+            if isinstance(chunk.get("usage"), dict):
+                u = chunk["usage"]
+                for src, dst in (("prompt_tokens", "prompt"), ("completion_tokens", "completion"),
+                                 ("prompt_cache_hit_tokens", "cached"), ("credit", "credit")):
+                    if isinstance(u.get(src), (int, float)):
+                        upstream_usage[dst] = u[src]
+            events.extend(translator.push(chunk))
+        events.extend(translator.finish())
         amsg = events_to_message(events)
     except Exception as e:
         return {"error": {"message": f"响应解析失败：{str(e)[:150]}", "type": "upstream_error"}}
@@ -904,12 +918,15 @@ def chat_sync(model: str, payload: dict[str, Any],
                 "name": str(b.get("name") or ""),
                 "arguments": json.dumps(b.get("input") or {}, ensure_ascii=False)}})
     u = amsg.get("usage") or {}
-    inp = int(u.get("input_tokens") or 0)
-    out = int(u.get("output_tokens") or 0)
+    # 优先用上游 usage（translator 只有估算的 input_tokens），fallback 到聚合值
+    inp = int(upstream_usage.get("prompt") or u.get("input_tokens") or 0)
+    out = int(upstream_usage.get("completion") or u.get("output_tokens") or 0)
     message: dict[str, Any] = {"role": "assistant", "content": text}
     if tool_calls:
         message["tool_calls"] = tool_calls
-    _log_usage(real, started, {"prompt": inp, "completion": out})
+    _log_usage(real, started, {"prompt": inp, "completion": out,
+                               "cached": upstream_usage.get("cached", 0),
+                               "credit": upstream_usage.get("credit", 0)})
     return {
         "id": str(amsg.get("id") or "chatcmpl-" + uuid.uuid4().hex[:12]),
         "object": "chat.completion", "created": int(time.time()), "model": model,
