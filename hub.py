@@ -173,7 +173,7 @@ def build_service() -> HubService:
     return HubService(load_registry())
 
 
-def cmd_status(svc: HubService) -> None:
+def cmd_status(svc: HubService, service: bool = False) -> None:
     data = svc.status()
     print(f"平台状态  {data['at']}")
     for p in data["platforms"]:
@@ -181,6 +181,51 @@ def cmd_status(svc: HubService) -> None:
         print(f"  [{flag:4s}] {p['displayName']} ({p['platform']}): {p['message']}")
         print(f"           声明模型: {', '.join(p['declaredModels'][:6])}" +
               (" ..." if len(p["declaredModels"]) > 6 else ""))
+    if service:
+        print("\n服务状态")
+        for name, port, probe in (("面板", 8798, "/api/status"),
+                                   ("网关", 8899, "/v1/models")):
+            info = probe_service(port, probe)
+            if info["alive"]:
+                print(f"  [RUN ] {name}  127.0.0.1:{port}  PID {info['pid']}  HTTP {info['http']}")
+            else:
+                print(f"  [STOP] {name}  127.0.0.1:{port}  {info['reason']}")
+
+
+def probe_service(port: int, probe_path: str) -> dict[str, Any]:
+    """只读探测本地服务：端口是否有人监听 + HTTP 探针响应。"""
+    import socket
+    from urllib.request import urlopen
+
+    out: dict[str, Any] = {"alive": False, "pid": "", "http": "", "reason": ""}
+    # 端口监听检测（尝试连接本地端口）
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=1):
+            pass
+        listening = True
+    except OSError:
+        listening = False
+    if not listening:
+        out["reason"] = "端口未监听"
+        return out
+    # 尝试拿 PID（Windows 用 netstat，失败不影响探测）
+    try:
+        import subprocess
+        txt = subprocess.run(["netstat", "-ano", "-p", "TCP"], capture_output=True,
+                             text=True, timeout=5).stdout
+        for line in txt.splitlines():
+            if f"127.0.0.1:{port}" in line and "LISTENING" in line:
+                out["pid"] = line.split()[-1]
+                break
+    except Exception:
+        pass
+    try:
+        with urlopen(f"http://127.0.0.1:{port}{probe_path}", timeout=3) as res:
+            out["http"] = res.status
+            out["alive"] = 200 <= res.status < 400
+    except Exception as e:
+        out["reason"] = f"端口通但探测失败：{str(e)[:60]}"
+    return out
 
 
 def cmd_sync(svc: HubService) -> None:
@@ -691,7 +736,8 @@ def main(argv: list[str] | None = None) -> int:
     utf8_stdout()
     parser = argparse.ArgumentParser(description="多平台签到/反代/面板统一框架")
     sub = parser.add_subparsers(dest="cmd", required=True)
-    sub.add_parser("status")
+    p = sub.add_parser("status")
+    p.add_argument("--service", action="store_true", help="同时检查面板/网关服务是否存活")
     p = sub.add_parser("selftest")
     p.add_argument("--offline", action="store_true", help="跳过联网 chat 冒烟（不消耗额度）")
     sub.add_parser("sync")  # 自动识别并纳管所有平台账号到签到/网关/面板
@@ -705,7 +751,7 @@ def main(argv: list[str] | None = None) -> int:
 
     svc = build_service()
     if args.cmd == "status":
-        cmd_status(svc)
+        cmd_status(svc, service=args.service)
     elif args.cmd == "selftest":
         return cmd_selftest(svc, offline=args.offline)
     elif args.cmd == "sync":
@@ -713,16 +759,44 @@ def main(argv: list[str] | None = None) -> int:
     elif args.cmd == "checkin":
         cmd_checkin(svc, args.platform)
     elif args.cmd == "serve":
+        ensure_port_free(args.port, "面板")
         handler = type("BoundPanelHandler", (PanelHandler,), {"svc": svc})
         print(f"面板 http://127.0.0.1:{args.port}/")
         ThreadingHTTPServer(("127.0.0.1", args.port), handler).serve_forever()
     elif args.cmd == "gateway":
+        ensure_port_free(args.port, "网关")
         import core.workbuddy_native as wn
         wn.LOG_MANAGER.start()  # 日志定时清理守护线程（1h 检查 / 14 天过期）
         handler = type("BoundGatewayHandler", (GatewayHandler,), {"svc": svc})
         print(f"网关 http://127.0.0.1:{args.port}/v1")
         ThreadingHTTPServer(("127.0.0.1", args.port), handler).serve_forever()
     return 0
+
+
+def ensure_port_free(port: int, name: str) -> None:
+    """启动前检查端口，占用时给出可操作的提示而不是抛 WinError 10048。"""
+    import socket
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(("127.0.0.1", port))
+    except OSError as e:
+        pid = ""
+        try:
+            import subprocess
+            txt = subprocess.run(["netstat", "-ano", "-p", "TCP"], capture_output=True,
+                                 text=True, timeout=5).stdout
+            for line in txt.splitlines():
+                if f"127.0.0.1:{port}" in line and "LISTENING" in line:
+                    pid = line.split()[-1]
+                    break
+        except Exception:
+            pass
+        hint = f" PID {pid}" if pid else ""
+        raise SystemExit(
+            f"端口 {port} 已被占用{hint}（{name}可能已在运行）。\n"
+            f"  查看服务：python hub.py status --service\n"
+            f"  或换端口：--port {port + 1}（原错误：{str(e)[:80]}）"
+        )
 
 
 if __name__ == "__main__":
