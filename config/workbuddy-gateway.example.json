@@ -9,10 +9,10 @@
       "claude-haiku": "deepseek-v4-flash",
       "claude-fable": "glm-5.3-flash",
       "claude-mythos": "kimi-k3-1",
-      "claude-opus-1": "deepseek-v4-pro",
-      "claude-sonnet-1": "deepseek-v4.1-flash",
+      "claude-opus-1": "kimi-k3.1-pro",
+      "claude-sonnet-1": "glm-5.3",
       "claude-haiku-1": "deepseek-v4-flash",
-      "claude-fable-1": "glm-5.3-flash",
+      "claude-fable-1": "deepseek-v4.1-flash",
       "claude-mythos-1": "kimi-k3-1",
       "claude-haiku-2": "hy4flash-free"
     },

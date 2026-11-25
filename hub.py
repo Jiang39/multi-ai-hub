@@ -88,9 +88,12 @@ ALIAS_ROUTES: dict[str, tuple[tuple[str, str], ...]] = {
 
 # Claude 系别名 → 统一别名（保留现有客户端配置，不改 base_url 就想切自动路由时）
 CLAUDE_TO_ALIAS = {
-    "claude-sonnet-1": "deepseek-v4.1-flash",
-    "claude-haiku-2": "deepseek-v4.1-flash",
-    "claude-fable-1": "glm-5.3",
+    # 桌面端 inferenceModels 的 name 必须是一一对应的 claude-* 格式：
+    # opus/sonnet/fable 三个名字分别映射到 kimi/glm/ds，供三模型 skill 使用。
+    "claude-opus-1":   "kimi-k3.1-pro",
+    "claude-sonnet-1": "glm-5.3",
+    "claude-fable-1":  "deepseek-v4.1-flash",
+    "claude-haiku-2":  "hy4flash-free",
     "claude-mythos-1": "kimi-k3.1-pro",
 }
 
