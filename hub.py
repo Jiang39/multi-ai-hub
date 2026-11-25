@@ -780,6 +780,8 @@ class GatewayHandler(LocalOnlyMixin, BaseHTTPRequestHandler):
                 {"id": a, "object": "model", "owned_by": "multi-ai-hub"}
                 for a in ALIAS_ROUTES
             ]
+            # 免费模型按真实名字列出（不用别名），走 WorkBuddy 原生协议。
+            models.append({"id": "hy4flash-free", "object": "model", "owned_by": "workbuddy"})
             self._json({"object": "list", "data": models})
         elif path in ANTHROPIC_PATHS:
             self._proxy_anthropic(path, b"")
