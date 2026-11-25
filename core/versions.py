@@ -31,7 +31,7 @@ CONFIG_FILE = ROOT / "config" / "versions.json"
 ADAPTED: dict[str, dict[str, str]] = {
     "qoder-intl": {"client": "0.5.x", "cosy": "1.1.38"},
     "qwenwork": {"client": "1.0.4", "cosy": "1.1.32"},
-    "loomy": {"client": "0.9.38"},
+    "loomy": {"client": "0.9.39"},
     "xiaohuanxiong": {"client": "v1.0.0"},
     "traework": {"client": "0.1.56", "build": "20260820"},
     "workbuddy": {},  # 原生协议层，不依赖声明性版本头

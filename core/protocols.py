@@ -138,6 +138,12 @@ def attach_tools(body: dict[str, Any], payload: dict[str, Any], platform: str = 
         body["tools"] = tools
         choice = payload.get("tool_choice")
         if choice is not None:
+            if platform == "traework":
+                # Trae 的 Go 网关要求 tool_choice 也是字符串：{"type":"any"} -> "any"
+                if isinstance(choice, dict) and isinstance(choice.get("type"), str):
+                    choice = choice["type"]
+                elif not isinstance(choice, str):
+                    choice = "auto"
             body["tool_choice"] = choice
 
 
@@ -295,6 +301,31 @@ def _openai_response(model: str, text: str, usage: dict[str, Any]) -> dict[str, 
     }
 
 
+def _apply_cosy_prompt(body: dict[str, Any], messages: list[dict[str, Any]], prompt: str,
+                       *, business_name: bool = False) -> None:
+    """覆盖 probe_chat._qoder_body/_qwen_body 里写死的 PROMPT="hi"。
+
+    这两个 body 构造函数来自早期 probe 脚本，chat_context.text / messages / originalContent
+    全是固定探针文本。chat() 必须把它们换成真实 messages，否则上游永远收到 "hi"。
+    """
+    if messages:
+        body["messages"] = messages
+    ctx = body.get("chat_context")
+    if not isinstance(ctx, dict):
+        ctx = {}
+        body["chat_context"] = ctx
+    ctx["text"] = prompt
+    extra = ctx.get("extra")
+    if isinstance(extra, dict):
+        extra["originalContent"] = prompt
+    else:
+        ctx["extra"] = {"context": [], "originalContent": prompt}
+    if business_name:
+        biz = body.get("business")
+        if isinstance(biz, dict):
+            biz["name"] = prompt[:30]
+
+
 def chat(platform: str, model: str, payload: dict[str, Any]) -> dict[str, Any]:
     """调用平台上游，返回 OpenAI 兼容响应。失败返回 {'error': {...}}。"""
     messages = payload.get("messages") if isinstance(payload.get("messages"), list) else []
@@ -315,6 +346,7 @@ def chat(platform: str, model: str, payload: dict[str, Any]) -> dict[str, Any]:
             url = "https://api3.qoder.sh/algo/api/v2/service/pro/sse/agent_chat_generation?FetchKeys=llm_model_result&AgentId=agent_common&Encode=1"
             body = pc._qoder_body(key)
             body["parameters"] = {"max_tokens": limit}
+            _apply_cosy_prompt(body, messages, prompt, business_name=True)
             attach_tools(body, payload, "qoder-intl")
             raw = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode()
             encoded = pc._encode_qoder(raw)
@@ -328,6 +360,7 @@ def chat(platform: str, model: str, payload: dict[str, Any]) -> dict[str, Any]:
             url = "https://gateway.qwenwork.cn/algo/api/v2/service/pro/sse/agent_chat_generation?FetchKeys=llm_model_result&AgentId=agent_common"
             body = pc._qwen_body(key)
             body["parameters"] = {"max_tokens": limit}
+            _apply_cosy_prompt(body, messages, prompt)
             attach_tools(body, payload, "qwenwork")
             rid = uuid.uuid4().hex
             raw = json.dumps(body, ensure_ascii=False, separators=(",", ":"))
@@ -346,10 +379,16 @@ def chat(platform: str, model: str, payload: dict[str, Any]) -> dict[str, Any]:
         elif platform == "loomy":
             sess = pm.loomy_session()
             t, tr = sess["token"], uuid.uuid4().hex
+            # 服务端可能强制要求与本机客户端一致的版本头；动态取本机版本，失败回退适配值。
+            try:
+                from .versions import installed as _installed
+                loomy_ver = _installed("loomy").get("version") or "0.9.39"
+            except Exception:
+                loomy_ver = "0.9.39"
             headers = {
                 "Accept": "text/event-stream", "Content-Type": "application/json",
                 "Authorization": f"Bearer {t}", "token": t,
-                "traceparent": f"00-{tr}-{tr[:16]}-01", "loomy-version": "0.9.38",
+                "traceparent": f"00-{tr}-{tr[:16]}-01", "loomy-version": loomy_ver,
                 "X-Loomy-Request-Purpose": "chat.message",
             }
             body = {"model": model, "messages": messages, "max_tokens": limit, "stream": False}
