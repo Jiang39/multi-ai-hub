@@ -908,18 +908,32 @@ class GatewayHandler(LocalOnlyMixin, BaseHTTPRequestHandler):
                 # 兼容旧 Claude 假名（走 WorkBuddy 原生映射）
                 alias = workbuddy_model_map()
                 routes = [("workbuddy", alias.get(model, model))]
-            # 自动代理：逐个平台尝试；只有限流/ overload 才换平台，参数错误直接返回
+            # 会话级 sticky：同一 session 固定渠道以保住 prompt caching；
+            # 只有该渠道 429/不可用才迁移，并在本会话记住新渠道。
+            from core.route_policy import get_sticky_router
+            router = get_sticky_router(routes)
+            logged = set()
+            for pid, adapter in self.svc.adapters.items():
+                try:
+                    if adapter.discover_accounts():
+                        logged.add(pid)
+                except Exception:
+                    pass
             result: dict[str, Any] = {}
-            for pid, mid in routes:
+            pid, mid = router.pick(session_key or "", logged)
+            for _ in range(len(routes) + 1):
+                if not pid:
+                    break
                 result = self.svc.chat(pid, mid, payload, preferred, session_key=session_key)
                 err = result.get("error") or {}
+                text = f"{err.get('type', '')} {err.get('message', '')}".lower()
                 if "error" not in result:
                     if isinstance(result.get("usage"), dict):
                         result["usage"]["routed_platform"] = pid
                     break
-                text = f"{err.get('type', '')} {err.get('message', '')}".lower()
                 if not any(k in text for k in ("rate", "limit", "429", "overload", "unsupported", "unknown")):
                     break  # 认证/参数错误，换平台也不会好
+                pid, mid = router.advance(session_key or "", logged)
         status = 400 if "error" in result else 200
         self._json(result, status)
 

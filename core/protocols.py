@@ -115,11 +115,26 @@ def discover(platform: str) -> list[dict[str, Any]]:
 
 
 # ---------------------------------------------------------------- 反代 chat
-def attach_tools(body: dict[str, Any], payload: dict[str, Any]) -> None:
-    """把 OpenAI 格式 tools/tool_choice 透传给支持它的上游（Loomy/小浣熊/Trae）。
-    COSY 协议平台（Qoder/QwenWork）忽略这些字段，不影响文本聊天。"""
+def attach_tools(body: dict[str, Any], payload: dict[str, Any], platform: str = "") -> None:
+    """把 OpenAI 格式 tools/tool_choice 透传给支持它的上游。
+
+    Trae 的 Go 网关要求 tools[].function.parameters 是 JSON 字符串，
+    其它平台接受对象。COSY 系（Qoder/QwenWork）本次无工具调用证据，
+    透传对象不会报错，但不保证工具能被触发。
+    """
     tools = payload.get("tools")
     if isinstance(tools, list) and tools:
+        if platform == "traework":
+            tools = [
+                {**t, "function": {
+                    **t.get("function", {}),
+                    "parameters": json.dumps(
+                        t.get("function", {}).get("parameters") or {"type": "object", "properties": {}},
+                        ensure_ascii=False,
+                    ),
+                }} if isinstance(t, dict) and isinstance(t.get("function"), dict) else t
+                for t in tools
+            ]
         body["tools"] = tools
         choice = payload.get("tool_choice")
         if choice is not None:
@@ -300,7 +315,7 @@ def chat(platform: str, model: str, payload: dict[str, Any]) -> dict[str, Any]:
             url = "https://api3.qoder.sh/algo/api/v2/service/pro/sse/agent_chat_generation?FetchKeys=llm_model_result&AgentId=agent_common&Encode=1"
             body = pc._qoder_body(key)
             body["parameters"] = {"max_tokens": limit}
-            attach_tools(body, payload)
+            attach_tools(body, payload, "qoder-intl")
             raw = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode()
             encoded = pc._encode_qoder(raw)
             headers = pm._cosy_auth(sess, url, encoded.decode("ascii"))
@@ -313,7 +328,7 @@ def chat(platform: str, model: str, payload: dict[str, Any]) -> dict[str, Any]:
             url = "https://gateway.qwenwork.cn/algo/api/v2/service/pro/sse/agent_chat_generation?FetchKeys=llm_model_result&AgentId=agent_common"
             body = pc._qwen_body(key)
             body["parameters"] = {"max_tokens": limit}
-            attach_tools(body, payload)
+            attach_tools(body, payload, "qwenwork")
             rid = uuid.uuid4().hex
             raw = json.dumps(body, ensure_ascii=False, separators=(",", ":"))
             headers = pm._cosy_auth(sess, url, raw)
@@ -338,7 +353,7 @@ def chat(platform: str, model: str, payload: dict[str, Any]) -> dict[str, Any]:
                 "X-Loomy-Request-Purpose": "chat.message",
             }
             body = {"model": model, "messages": messages, "max_tokens": limit, "stream": False}
-            attach_tools(body, payload)
+            attach_tools(body, payload, "loomy")
             raw = json.dumps(body, ensure_ascii=False).encode()
             st, text = pc._post_raw("https://loomyad.xunfei.cn/api/v1/chat/completions", headers, raw)
             content, usage = _parse_json_chat(text)
@@ -353,7 +368,7 @@ def chat(platform: str, model: str, payload: dict[str, Any]) -> dict[str, Any]:
             }
             key = VERIFIED_MODELS[platform].get(model, model)
             body = {"model": key, "messages": messages, "max_tokens": limit, "stream": False}
-            attach_tools(body, payload)
+            attach_tools(body, payload, "xiaohuanxiong")
             raw = json.dumps(body, ensure_ascii=False).encode()
             st, text = pc._post_raw("https://xiaohuanxiong.com/api/web/llm/v2/chat/completions", headers, raw)
             content, usage = _parse_json_chat(text)
@@ -375,7 +390,7 @@ def chat(platform: str, model: str, payload: dict[str, Any]) -> dict[str, Any]:
             body = pc._trae_body(key)
             body["max_tokens"] = limit
             body["messages"] = messages or [{"role": "user", "content": [{"type": "text", "text": prompt}]}]
-            attach_tools(body, payload)
+            attach_tools(body, payload, "traework")
             if body["messages"] and isinstance(body["messages"][0].get("content"), str):
                 body["messages"] = [{"role": "user", "content": [{"type": "text", "text": prompt}]}]
             raw = json.dumps(body, ensure_ascii=False).encode()
