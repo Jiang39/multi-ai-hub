@@ -92,10 +92,15 @@ class TestChatSyncParsing(unittest.TestCase):
         self.assertEqual(json.loads(tcs[0]["function"]["arguments"]), {"city": "Beijing"})
 
     def test_upstream_error(self) -> None:
-        """429 应返回 error 而不是空内容，且不抛异常。"""
+        """429 应返回 error 而不是空内容，且不抛异常。
+
+        注意：chat_sync 的 429 分支会写 MODEL_COOLDOWNS（落到真实 runtime/ratelimit.json），
+        测试必须 mock 掉，否则假账号 test-uin 会出现在面板限流列表里。
+        """
         self.mock_fwd.return_value = (429, "rate limited")
-        r = wn.chat_sync("deepseek-v4.1-flash",
-                         {"messages": [{"role": "user", "content": "hi"}], "max_tokens": 8})
+        with patch.object(wn.MODEL_COOLDOWNS, "mark"):
+            r = wn.chat_sync("deepseek-v4.1-flash",
+                             {"messages": [{"role": "user", "content": "hi"}], "max_tokens": 8})
         self.assertIn("error", r)
         self.assertEqual(r["error"]["status"], 429)
 

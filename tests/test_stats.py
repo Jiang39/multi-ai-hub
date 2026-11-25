@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -11,6 +12,13 @@ from core import workbuddy_data as wd
 
 
 class SigninGainsTests(unittest.TestCase):
+    @staticmethod
+    def _today_stamp() -> str:
+        # signin_gains() 的 today 按运行时当天(UTC+8)归日，fixture 必须动态取当天，
+        # 否则跨天后固定日期会落到 last7、today 恒为 0，测试假失败。
+        tz = timezone(timedelta(hours=8))
+        return datetime.now(tz).strftime("%Y-%m-%d 10:00:00")
+
     def _run(self, lines: list[tuple[str, dict]]) -> dict:
         text = "\n".join(
             f"[{stamp}] " + json.dumps(payload, ensure_ascii=False)
@@ -32,7 +40,7 @@ class SigninGainsTests(unittest.TestCase):
                           "连登兑换「进阶」（+50 积分）；今日 +100",
             }],
         }
-        gains = self._run([("2026-11-24 10:00:00", payload)])
+        gains = self._run([(self._today_stamp(), payload)])
         # 签到分 100（取一次）+ 礼物 15 + 任务 50 + 连登 50；今日+100 不重复加
         self.assertEqual(gains["today"], 215.0)
 
@@ -44,7 +52,7 @@ class SigninGainsTests(unittest.TestCase):
                 {"uid": "u2", "report": "成功领取 200 积分"},
             ],
         }
-        gains = self._run([("2026-11-24 10:00:00", payload)])
+        gains = self._run([(self._today_stamp(), payload)])
         # u1: 100 + 15，u2: 200
         self.assertEqual(gains["today"], 315.0)
 
